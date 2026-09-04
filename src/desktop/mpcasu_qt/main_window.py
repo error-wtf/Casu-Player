@@ -1377,6 +1377,10 @@ class LibraryPage(QFrame):
     addRequested = Signal(list)
     refreshRequested = Signal()
     backRequested = Signal()
+    playlistNewRequested = Signal()
+    playlistAddCurrentRequested = Signal(object)
+    playlistRemoveRequested = Signal(object, list)
+    playlistPlayRequested = Signal(object)
 
     MODES = {"all": "All Tracks", "artists": "Artists", "albums": "Albums",
              "genres": "Genres", "favorites": "Favorites", "playlists": "Playlists"}
@@ -1429,7 +1433,7 @@ class LibraryPage(QFrame):
         self._tracks_list = QListWidget()
         self._tracks_list.setObjectName("QueueTree")
         self._tracks_list.setSelectionMode(QAbstractItemView.ExtendedSelection)
-        self._tracks_list.itemDoubleClicked.connect(lambda _item: self._add_selected())
+        self._tracks_list.itemDoubleClicked.connect(lambda _item: self._activate_selected())
         self._tracks_list.setContextMenuPolicy(Qt.CustomContextMenu)
         self._tracks_list.customContextMenuRequested.connect(
             self._library_track_context_menu)
@@ -1448,6 +1452,26 @@ class LibraryPage(QFrame):
         add_btn.setObjectName("PrimaryButton")
         add_btn.clicked.connect(self._add_selected)
         bottom.addWidget(add_btn)
+        self._add_btn = add_btn
+        self._new_playlist_btn = QPushButton("New playlist")
+        self._new_playlist_btn.setObjectName("PrimaryButton")
+        self._new_playlist_btn.clicked.connect(
+            lambda: self.playlistNewRequested.emit())
+        bottom.addWidget(self._new_playlist_btn)
+        self._playlist_add_current_btn = QPushButton("Add current media")
+        self._playlist_add_current_btn.setObjectName("IconButton")
+        self._playlist_add_current_btn.clicked.connect(
+            lambda: self.playlistAddCurrentRequested.emit(
+                self._selected_playlist_path()))
+        bottom.addWidget(self._playlist_add_current_btn)
+        self._playlist_remove_btn = QPushButton("Remove selected item")
+        self._playlist_remove_btn.setObjectName("IconButton")
+        self._playlist_remove_btn.clicked.connect(self._remove_playlist_selection)
+        bottom.addWidget(self._playlist_remove_btn)
+        self._playlist_play_btn = QPushButton("Play selected")
+        self._playlist_play_btn.setObjectName("PrimaryButton")
+        self._playlist_play_btn.clicked.connect(self._play_playlist_selection)
+        bottom.addWidget(self._playlist_play_btn)
         layout.addLayout(bottom)
 
         if self._settings_store is not None:
@@ -1538,6 +1562,12 @@ class LibraryPage(QFrame):
     def _refresh(self):
         query = self._query()
         mode = self._mode()
+        playlist_mode = mode == "playlists"
+        self._add_btn.setVisible(not playlist_mode)
+        self._new_playlist_btn.setVisible(playlist_mode)
+        self._playlist_add_current_btn.setVisible(playlist_mode)
+        self._playlist_remove_btn.setVisible(playlist_mode)
+        self._playlist_play_btn.setVisible(playlist_mode)
         self._tracks.clear()
         self._tracks_list.clear()
         use_groups = mode in ("artists", "albums", "genres", "playlists")
@@ -1653,8 +1683,15 @@ class LibraryPage(QFrame):
                     try:
                         if p.suffix.lower() in playlist_exts and p.is_file():
                             name = p.stem
-                            self._playlist_files[name] = p
-                            self._groups_list.addItem(name)
+                            label = name
+                            counter = 2
+                            while label in self._playlist_files:
+                                label = f"{name} ({counter})"
+                                counter += 1
+                            self._playlist_files[label] = p
+                            row = QListWidgetItem(label)
+                            row.setToolTip(str(p))
+                            self._groups_list.addItem(row)
                     except (PermissionError, OSError):
                         continue
             except (PermissionError, OSError):
@@ -1678,10 +1715,9 @@ class LibraryPage(QFrame):
         self._tracks_list.clear()
         entries = self._parse_playlist_file(pl_path)
         lib_items = self._media_library.items()
-        lib_by_path = {str(it.path): it for it in lib_items}
         for entry_path in entries:
             resolved = str(Path(entry_path).expanduser().resolve())
-            lib_item = lib_items[0] if lib_items else None
+            lib_item = None
             for it in lib_items:
                 if str(it.path) == resolved:
                     lib_item = it
@@ -1689,7 +1725,6 @@ class LibraryPage(QFrame):
             if lib_item is None:
                 from casu.library import LibraryItem as LI
                 lib_item = LI(Path(resolved), 0, 0, False, 0.0, None, {})
-            self._tracks.append(Path(resolved))
             self._append_track(lib_item)
         self._count_label.setText(f"{len(self._tracks)} tracks")
 
@@ -1740,6 +1775,42 @@ class LibraryPage(QFrame):
                 paths.append(self._tracks[row])
         if paths:
             self.addRequested.emit(paths)
+
+    def show_playlists(self):
+        for index in range(self._mode_combo.count()):
+            if self._mode_combo.tabData(index) == "playlists":
+                self._mode_combo.setCurrentIndex(index)
+                break
+        self._refresh()
+
+    def _selected_playlist_path(self):
+        item = self._groups_list.currentItem()
+        return self._playlist_files.get(item.text()) if item is not None else None
+
+    def _selected_playlist_entries(self) -> list:
+        entries = []
+        for item in self._tracks_list.selectedItems():
+            row = self._tracks_list.row(item)
+            if 0 <= row < len(self._tracks):
+                entries.append(self._tracks[row])
+        return entries
+
+    def _activate_selected(self):
+        if self._mode() == "playlists":
+            self._play_playlist_selection()
+        else:
+            self._add_selected()
+
+    def _play_playlist_selection(self):
+        entries = self._selected_playlist_entries()
+        if entries:
+            self.playlistPlayRequested.emit(entries[0])
+
+    def _remove_playlist_selection(self):
+        playlist = self._selected_playlist_path()
+        entries = self._selected_playlist_entries()
+        if playlist is not None and entries:
+            self.playlistRemoveRequested.emit(playlist, entries)
 
     def _library_track_context_menu(self, position):
         item = self._tracks_list.itemAt(position)
@@ -3143,6 +3214,12 @@ class MainWindow(QMainWindow):
         self._library_page.addRequested.connect(lambda paths: self.add_files(paths))
         self._library_page.refreshRequested.connect(self.refresh_watched_folders)
         self._library_page.backRequested.connect(self._show_player_page)
+        self._library_page.playlistNewRequested.connect(self._new_playlist)
+        self._library_page.playlistAddCurrentRequested.connect(
+            self._add_current_to_library_playlist)
+        self._library_page.playlistRemoveRequested.connect(
+            self._remove_library_playlist_items)
+        self._library_page.playlistPlayRequested.connect(self.play_selected)
         self._options_page = OptionsPage(self.settings_store, self)
         self._options_page.applied.connect(self._apply_settings)
         self._options_page.actionRequested.connect(self._options_action)
@@ -3278,10 +3355,8 @@ class MainWindow(QMainWindow):
             self.show_sources("url")
             return
         if name == "PLAYLISTS":
-            self._show_player_page()
-            self._playlist_pane.setVisible(True)
-            self._load_playlist_overview()
-            self._playlist_pane.set_view("playlists")
+            self._library_page.show_playlists()
+            self._show_page(self._library_page, "PLAYLISTS")
             self._sidebar.set_active("PLAYLISTS")
             return
         if name == "IPTV / EPG":
@@ -5701,7 +5776,53 @@ class MainWindow(QMainWindow):
             self.status(f"Could not create playlist: {exc}")
             return
         self._render_playlist(self.playlist_model.index_of(target))
+        self._library_page.show_playlists()
         self.status(f"Playlist created · {target.name}")
+
+    def _add_current_to_library_playlist(self, target):
+        if target is None:
+            self.status("Please select a playlist")
+            return
+        source = self.current or self.selected_path()
+        if source is None or self._playlist_pane._is_playlist(source):
+            self.status("No media item available")
+            return
+        try:
+            model = load_playlist_file(target)
+            before = len(model.items)
+            model.add((source,))
+            if len(model.items) == before:
+                self.status("Media is already in the playlist")
+                return
+            save_playlist_file(target, model)
+        except (PlaylistError, OSError, ValueError) as exc:
+            self.status(f"Could not update playlist: {exc}")
+            return
+        self._library_page.show_playlists()
+        self._invalidate_play_seq()
+        self.status(f"Added media to {Path(target).name}")
+
+    def _remove_library_playlist_items(self, target, entries):
+        if target is None or not entries:
+            self.status("Please select a playlist item")
+            return
+        try:
+            model = load_playlist_file(target)
+            wanted = {str(entry) for entry in entries}
+            indices = [index for index, entry in enumerate(model.items)
+                       if str(entry) in wanted]
+            if not indices:
+                self.status("Playlist item is no longer available")
+                return
+            model.remove(indices)
+            save_playlist_file(target, model)
+        except (PlaylistError, OSError, ValueError) as exc:
+            self.status(f"Could not update playlist: {exc}")
+            return
+        self._library_page.show_playlists()
+        self._playlist_pane.refresh_group(target)
+        self._invalidate_play_seq()
+        self.status(f"Removed {len(indices)} item(s) from {Path(target).name}")
 
     def _add_current_to_selected_playlist(self):
         target = self._playlist_pane.selected_playlist_path()
