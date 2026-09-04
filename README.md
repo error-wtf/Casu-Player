@@ -13,7 +13,7 @@ modes, subtitles, chapters, bookmarks and a lightweight Wave visualizer.
 
 ![MPCASU Qt desktop](docs/screenshots/mpcasu-qt-v7.png)
 
-![MPCASU Android](docs/screenshots/mpcasu-android-v7.png)
+![MPCASU Android](docs/screenshots/mpcasu-android-v7.jpeg)
 
 ## Downloads
 
@@ -66,5 +66,13 @@ playback.
 
 ## License
 
-The included project-authored files are provided under the license in
-[`LICENSE`](LICENSE). Third-party components retain their respective licenses.
+Project-authored MPCASU material in this repository is distributed under
+[Anticapitalist License 1.4](LICENSE).
+
+The background and current publication boundary of the experimental CASU
+codec are explained in [DISCLAIMER.md](DISCLAIMER.md).
+
+Third-party runtime components retain their respective upstream licenses and
+are not relicensed by the MPCASU project. See
+[THIRD_PARTY_COMPONENTS.md](THIRD_PARTY_COMPONENTS.md) and
+[THIRD_PARTY_LICENSES/](THIRD_PARTY_LICENSES/).
