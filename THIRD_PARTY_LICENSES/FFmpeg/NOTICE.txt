@@ -1,0 +1,5 @@
+FFmpeg/ffprobe are bundled as unmodified third-party runtime tools.
+
+Detected license mode: GPL-2.0-or-later
+
+The MPCASU Anticapitalist License 1.4 does not relicense FFmpeg.

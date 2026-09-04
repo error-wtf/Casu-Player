@@ -1,0 +1,8 @@
+Qt 6 runtime libraries are bundled with MPCASU Player.
+
+Qt remains licensed under its applicable upstream open-source licenses.
+The MPCASU Anticapitalist License 1.4 does not relicense Qt.
+
+The distributed MPCASU Player uses Qt as shared/dynamically loaded runtime
+libraries. Users must retain the rights granted by the applicable Qt LGPL/GPL
+licenses, including replacement/relinking rights where applicable.

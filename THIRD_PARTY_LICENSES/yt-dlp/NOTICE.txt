@@ -1,0 +1,3 @@
+yt-dlp is an independent third-party project distributed under the Unlicense.
+
+The MPCASU Anticapitalist License 1.4 does not relicense yt-dlp.

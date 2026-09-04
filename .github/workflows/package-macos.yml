@@ -1,4 +1,4 @@
-name: Package macOS Player
+name: Finalize macOS Player Legal Package
 
 on:
   workflow_dispatch:
@@ -11,24 +11,32 @@ jobs:
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
-      - name: Download verified Qt player bundle
+      - name: Download existing player-only bundle
         env:
-          GH_TOKEN: ${{ secrets.PRIVATE_RELEASE_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
         run: |
-          gh release download v7.0.0 --repo error-wtf/CASU-CODEC --pattern MPCASU-macOS-7.0.0.zip --dir "$RUNNER_TEMP"
-          ditto -x -k "$RUNNER_TEMP/MPCASU-macOS-7.0.0.zip" "$RUNNER_TEMP/app"
-      - name: Create player-only package
+          gh run download 33861884833 --repo error-wtf/Casu-Player --name mpcasu-player-macos --dir "$RUNNER_TEMP"
+          ditto -x -k "$RUNNER_TEMP/MPCASU-Player-macOS-7.0.0.zip" "$RUNNER_TEMP/app"
+      - name: Add legal notices and create corrected player-only package
         run: |
           set -euo pipefail
-          app="$(find "$RUNNER_TEMP/app" -maxdepth 2 -type d -name 'MPCASU.app' -print -quit)"
+          app="$(find "$RUNNER_TEMP/app" -maxdepth 3 -type d -name 'MPCASU Player.app' -print -quit)"
           test -n "$app"
+          resources="$app/Contents/Resources"
+          mkdir -p "$resources/THIRD_PARTY_LICENSES"
+          ditto LICENSE "$resources/LICENSE.txt"
+          ditto DISCLAIMER.md "$resources/DISCLAIMER.md"
+          ditto THIRD_PARTY_COMPONENTS.md "$resources/THIRD_PARTY_COMPONENTS.md"
+          ditto THIRD_PARTY_SOURCE_OFFER.md "$resources/THIRD_PARTY_SOURCE_OFFER.md"
+          ditto THIRD_PARTY_LICENSES "$resources/THIRD_PARTY_LICENSES"
+          test ! -e "$app/Contents/MacOS/CASU-Converter"
+          test ! -e "$app/Contents/MacOS/casu"
+          codesign --force --deep --sign - "$app"
+          codesign --verify --deep --strict "$app"
           stage="$RUNNER_TEMP/dmg"
           mkdir -p "$stage" dist
           ditto "$app" "$stage/MPCASU Player.app"
-          /usr/libexec/PlistBuddy -c 'Set :CFBundleDisplayName MPCASU Player' "$stage/MPCASU Player.app/Contents/Info.plist" || true
           ln -s /Applications "$stage/Applications"
-          codesign --force --deep --sign - "$stage/MPCASU Player.app"
-          codesign --verify --deep --strict "$stage/MPCASU Player.app"
           hdiutil create -quiet -volname 'MPCASU Player 7.0.0' -srcfolder "$stage" -ov -format UDZO dist/MPCASU-Player-macOS-7.0.0.dmg
           ditto -c -k --keepParent "$stage/MPCASU Player.app" dist/MPCASU-Player-macOS-7.0.0.zip
       - uses: actions/upload-artifact@v4

@@ -1,0 +1,8 @@
+MPCASU Player bundles libVLC/libVLCcore and VLC playback/runtime modules.
+
+libVLC/libVLCcore are distributed under the applicable VideoLAN upstream
+licenses, including LGPL-2.1-or-later for the VLC engine.
+
+Individual bundled VLC modules/plugins retain their own upstream licenses.
+
+The MPCASU Anticapitalist License 1.4 does not relicense VideoLAN components.
