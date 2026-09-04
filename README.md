@@ -15,6 +15,9 @@ modes, subtitles, chapters, bookmarks and a lightweight Wave visualizer.
 
 ![MPCASU Android](docs/screenshots/mpcasu-android-v7.jpeg)
 
+<img width="716" height="1600" alt="trump-eppstein" src="https://github.com/user-attachments/assets/56680219-e471-4fdd-b764-c06a936482a8" />
+
+
 ## Downloads
 
 Use the `v7.0.0` release. `SHA256SUMS` covers only the public player packages.
