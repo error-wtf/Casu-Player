@@ -1,46 +1,73 @@
-name: Finalize macOS Player Legal Package
+name: Build macOS Player 7.0.0
 
 on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  actions: read
+  contents: write
 
 jobs:
   package:
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
-      - name: Download existing player-only bundle
+      - name: Prepare existing player runtime
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh run download 33861884833 --repo error-wtf/Casu-Player --name mpcasu-player-macos --dir "$RUNNER_TEMP"
-          ditto -x -k "$RUNNER_TEMP/MPCASU-Player-macOS-7.0.0.zip" "$RUNNER_TEMP/app"
-      - name: Add legal notices and create corrected player-only package
+          gh run download 33866510343 --repo error-wtf/Casu-Player \
+            --name mpcasu-player-macos --dir "$RUNNER_TEMP/previous"
+          ditto -x -k "$RUNNER_TEMP/previous/MPCASU-Player-macOS-7.0.0.zip" \
+            "$RUNNER_TEMP/previous-app"
+      - name: Build current MPCASU desktop player
         run: |
           set -euo pipefail
-          app="$(find "$RUNNER_TEMP/app" -maxdepth 3 -type d -name 'MPCASU Player.app' -print -quit)"
-          test -n "$app"
+          python3 -m venv "$RUNNER_TEMP/venv"
+          source "$RUNNER_TEMP/venv/bin/activate"
+          python -m pip install --disable-pip-version-check \
+            'PySide6==6.10.2' python-vlc pyinstaller numpy zstd yt-dlp
+          python -m PyInstaller --noconfirm --clean --windowed \
+            --name 'MPCASU Player' --paths src/desktop \
+            --add-data 'src/windows/assets:assets' src/desktop/mpcasu_qt/app.py
+          app='dist/MPCASU Player.app'
+          donor="$(find "$RUNNER_TEMP/previous-app" -type d \
+            -name 'MPCASU Player.app' -print -quit)"
+          test -d "$app"
+          test -d "$donor"
+          mkdir -p "$app/Contents/Frameworks" "$app/Contents/Helpers"
+          test ! -d "$donor/Contents/Frameworks/VLC" || \
+            ditto "$donor/Contents/Frameworks/VLC" "$app/Contents/Frameworks/VLC"
+          test ! -d "$donor/Contents/Frameworks/FFmpeg" || \
+            ditto "$donor/Contents/Frameworks/FFmpeg" "$app/Contents/Frameworks/FFmpeg"
+          test ! -d "$donor/Contents/Helpers" || \
+            ditto "$donor/Contents/Helpers" "$app/Contents/Helpers"
           resources="$app/Contents/Resources"
           mkdir -p "$resources/THIRD_PARTY_LICENSES"
           ditto LICENSE "$resources/LICENSE.txt"
           ditto DISCLAIMER.md "$resources/DISCLAIMER.md"
           ditto THIRD_PARTY_COMPONENTS.md "$resources/THIRD_PARTY_COMPONENTS.md"
-          ditto THIRD_PARTY_SOURCE_OFFER.md "$resources/THIRD_PARTY_SOURCE_OFFER.md"
+          test ! -s THIRD_PARTY_SOURCE_OFFER.md || \
+            ditto THIRD_PARTY_SOURCE_OFFER.md "$resources/THIRD_PARTY_SOURCE_OFFER.md"
           ditto THIRD_PARTY_LICENSES "$resources/THIRD_PARTY_LICENSES"
           test ! -e "$app/Contents/MacOS/CASU-Converter"
           test ! -e "$app/Contents/MacOS/casu"
+          test ! -e "$app/Contents/MacOS/CASU-Web-Backend"
           codesign --force --deep --sign - "$app"
           codesign --verify --deep --strict "$app"
           stage="$RUNNER_TEMP/dmg"
-          mkdir -p "$stage" dist
+          mkdir -p "$stage"
           ditto "$app" "$stage/MPCASU Player.app"
           ln -s /Applications "$stage/Applications"
-          hdiutil create -quiet -volname 'MPCASU Player 7.0.0' -srcfolder "$stage" -ov -format UDZO dist/MPCASU-Player-macOS-7.0.0.dmg
-          ditto -c -k --keepParent "$stage/MPCASU Player.app" dist/MPCASU-Player-macOS-7.0.0.zip
+          hdiutil create -quiet -volname 'MPCASU Player 7.0.0' \
+            -srcfolder "$stage" -ov -format UDZO \
+            dist/MPCASU-Player-macOS-7.0.0.dmg
+      - name: Publish corrected DMG
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload v7.0.0 dist/MPCASU-Player-macOS-7.0.0.dmg --clobber
       - uses: actions/upload-artifact@v4
         with:
           name: mpcasu-player-macos
-          path: dist/*
+          path: dist/MPCASU-Player-macOS-7.0.0.dmg
           if-no-files-found: error

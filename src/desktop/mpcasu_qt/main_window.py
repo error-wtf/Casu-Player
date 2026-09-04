@@ -461,6 +461,8 @@ class PlaylistPane(QFrame):
     # their playlist file ("remove from playlist" / "move to playlist").
     childRemoveRequested = Signal(list)
     childMoveRequested = Signal(list)
+    newPlaylistRequested = Signal()
+    addCurrentToPlaylistRequested = Signal()
 
     PLAYLIST_SUFFIXES = {".m3u", ".m3u8", ".pls", ".json", ".wpl", ".xspf",
                          ".jspf", ".asx", ".wmx", ".wvx", ".rmp", ".ram"}
@@ -506,6 +508,18 @@ class PlaylistPane(QFrame):
         url_btn.clicked.connect(lambda: self.urlRequested.emit())
         actions.addWidget(url_btn)
         header_layout.addLayout(actions)
+        playlist_actions = QHBoxLayout()
+        playlist_actions.setSpacing(6)
+        new_playlist_btn = QPushButton("New playlist")
+        new_playlist_btn.setObjectName("IconButton")
+        new_playlist_btn.clicked.connect(lambda: self.newPlaylistRequested.emit())
+        playlist_actions.addWidget(new_playlist_btn)
+        add_current_btn = QPushButton("Add current media")
+        add_current_btn.setObjectName("IconButton")
+        add_current_btn.clicked.connect(
+            lambda: self.addCurrentToPlaylistRequested.emit())
+        playlist_actions.addWidget(add_current_btn)
+        header_layout.addLayout(playlist_actions)
         layout.addWidget(header)
 
         self.tree = QueueTree(self)
@@ -550,7 +564,7 @@ class PlaylistPane(QFrame):
         remove_btn.setObjectName("IconButton")
         remove_btn.setFixedWidth(30)
         remove_btn.setToolTip("Remove selected entries (Del)")
-        remove_btn.clicked.connect(lambda: self.removeRequested.emit(self.selected_rows()))
+        remove_btn.clicked.connect(self._remove_selection)
         cl.addWidget(remove_btn)
         rename_btn = QPushButton("✎")
         rename_btn.setObjectName("IconButton")
@@ -637,6 +651,24 @@ class PlaylistPane(QFrame):
             if item.parent() is not None and item.data(0, Qt.UserRole):
                 return str(item.data(0, Qt.UserRole))
         return None
+
+    def selected_playlist_path(self) -> Path | None:
+        item = self.tree.currentItem()
+        if item is None:
+            return None
+        if item.parent() is not None:
+            item = item.parent()
+        value = str(item.data(0, Qt.UserRole) or "")
+        return Path(value) if self._is_playlist(value) else None
+
+    def _remove_selection(self):
+        child = self.selected_child()
+        if child is not None:
+            self.childRemoveRequested.emit([child])
+            return
+        rows = self.selected_rows()
+        if rows:
+            self.removeRequested.emit(rows)
 
     def select_rows(self, indexes: list):
         """Re-apply a multi-selection after a queue re-render."""
@@ -2099,7 +2131,7 @@ class EpgPage(QFrame):
         source_row.addWidget(load_file_btn)
         load_url_btn = QPushButton("Load URL")
         load_url_btn.setObjectName("IconButton")
-        load_url_btn.clicked.connect(lambda: self._load_source(self._source_entry.text().strip()))
+        load_url_btn.clicked.connect(self._load_url)
         source_row.addWidget(load_url_btn)
         outer.addLayout(source_row)
 
@@ -2125,8 +2157,17 @@ class EpgPage(QFrame):
         if path:
             self._load_source(path)
 
-    def _load_source(self, source: str):
+    def _load_url(self):
+        source = self._source_entry.text().strip()
         if not source:
+            self._status.setText("Please enter an IPTV playlist URL.")
+            return
+        self._load_source(source)
+
+    def _load_source(self, source: str):
+        source = str(source or "").strip()
+        if not source:
+            self._status.setText("Please enter an IPTV playlist URL.")
             return
         try:
             if source.endswith((".xml", ".xmltv")):
@@ -3125,6 +3166,9 @@ class MainWindow(QMainWindow):
         self._playlist_pane.childPlayRequested.connect(self._on_queue_child_play)
         self._playlist_pane.childRemoveRequested.connect(self._on_child_remove_from_playlist)
         self._playlist_pane.childMoveRequested.connect(self._on_child_move_to_playlist)
+        self._playlist_pane.newPlaylistRequested.connect(self._new_playlist)
+        self._playlist_pane.addCurrentToPlaylistRequested.connect(
+            self._add_current_to_selected_playlist)
         self._playlist_pane.saveRequested.connect(self.save_playlist)
         self._playlist_pane.loadRequested.connect(self.load_playlist)
         self._random = random.SystemRandom()
@@ -3236,6 +3280,7 @@ class MainWindow(QMainWindow):
         if name == "PLAYLISTS":
             self._show_player_page()
             self._playlist_pane.setVisible(True)
+            self._load_playlist_overview()
             self._playlist_pane.set_view("playlists")
             self._sidebar.set_active("PLAYLISTS")
             return
@@ -5608,6 +5653,79 @@ class MainWindow(QMainWindow):
             if not isinstance(item, str) and item.suffix.lower() in PlaylistPane.PLAYLIST_SUFFIXES:
                 playlists.append(item)
         return playlists
+
+    def _playlist_search_folders(self) -> list[Path]:
+        try:
+            folders = [Path(p).expanduser() for p in
+                       self.settings_store.load().watched_folders]
+        except Exception:
+            folders = []
+        return folders or [Path.home()]
+
+    def _load_playlist_overview(self):
+        existing = {str(path) for path in self._queue_playlists()}
+        found = []
+        for folder in self._playlist_search_folders():
+            if not folder.is_dir():
+                continue
+            try:
+                for path in folder.rglob("*"):
+                    try:
+                        if (path.is_file() and
+                                path.suffix.lower() in PlaylistPane.PLAYLIST_SUFFIXES):
+                            resolved = path.resolve()
+                            if str(resolved) not in existing:
+                                found.append(resolved)
+                                existing.add(str(resolved))
+                    except (OSError, PermissionError):
+                        continue
+            except (OSError, PermissionError):
+                continue
+        if found:
+            self.playlist_model.add(found)
+            self._render_playlist()
+
+    def _new_playlist(self):
+        from PySide6.QtWidgets import QInputDialog
+        name, ok = QInputDialog.getText(
+            self, "New playlist", "Playlist name (e.g. mylist.m3u):")
+        if not ok or not name.strip():
+            self.status("Playlist name is required")
+            return
+        try:
+            target = self._resolve_playlist_target(name)
+            if not target.exists():
+                save_playlist_file(target, PlaylistModel())
+            self.playlist_model.add((target,))
+        except (PlaylistError, OSError, ValueError) as exc:
+            self.status(f"Could not create playlist: {exc}")
+            return
+        self._render_playlist(self.playlist_model.index_of(target))
+        self.status(f"Playlist created · {target.name}")
+
+    def _add_current_to_selected_playlist(self):
+        target = self._playlist_pane.selected_playlist_path()
+        if target is None:
+            self.status("Please select a playlist")
+            return
+        source = self.current or self.selected_path()
+        if source is None or self._playlist_pane._is_playlist(source):
+            self.status("No media item available")
+            return
+        try:
+            model = load_playlist_file(target)
+            before = len(model.items)
+            model.add((source,))
+            if len(model.items) == before:
+                self.status("Media is already in the playlist")
+                return
+            save_playlist_file(target, model)
+        except (PlaylistError, OSError, ValueError) as exc:
+            self.status(f"Could not update playlist: {exc}")
+            return
+        self._playlist_pane.refresh_group(target)
+        self._invalidate_play_seq()
+        self.status(f"Added media to {target.name}")
 
     def _choose_playlist_target(self, playlists: list, *, title: str,
                                 label: str) -> Path | None:

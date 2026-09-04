@@ -1356,6 +1356,74 @@ void MainWindow::build_playlist_pane() {
     connect(url_btn, &QPushButton::clicked, this, &MainWindow::add_url);
     actions->addWidget(url_btn);
     header_layout->addLayout(actions);
+    auto* playlist_actions = new QHBoxLayout();
+    playlist_actions->setSpacing(6);
+    auto* new_playlist_btn = new QPushButton(QStringLiteral("New playlist"), header);
+    new_playlist_btn->setObjectName("IconButton");
+    playlist_actions->addWidget(new_playlist_btn);
+    auto* add_current_btn = new QPushButton(QStringLiteral("Add current media"), header);
+    add_current_btn->setObjectName("IconButton");
+    playlist_actions->addWidget(add_current_btn);
+    header_layout->addLayout(playlist_actions);
+    connect(new_playlist_btn, &QPushButton::clicked, this, [this] {
+        bool ok = false;
+        QString name = QInputDialog::getText(
+            this, QStringLiteral("New playlist"),
+            QStringLiteral("Playlist name (e.g. mylist.m3u):"),
+            QLineEdit::Normal, QString(), &ok).trimmed();
+        if (!ok || name.isEmpty()) {
+            status(QStringLiteral("Playlist name is required"));
+            return;
+        }
+        if (!QFileInfo(name).isAbsolute()) name = QDir::home().filePath(name);
+        if (QFileInfo(name).suffix().isEmpty()) name += QStringLiteral(".m3u");
+        PlaylistModel model;
+        const std::string err = PlaylistModel::save_file(name, model);
+        if (!err.empty()) {
+            status(QStringLiteral("Could not create playlist: %1")
+                       .arg(QString::fromStdString(err)));
+            return;
+        }
+        if (playlist_.index_of(name) < 0) playlist_.add(name);
+        refresh_playlist();
+        set_queue_view_filter(QStringLiteral("playlists"));
+        status(QStringLiteral("Playlist created · %1").arg(QFileInfo(name).fileName()));
+    });
+    connect(add_current_btn, &QPushButton::clicked, this, [this] {
+        QTreeWidgetItem* selected = playlist_view_->currentItem();
+        if (selected && selected->parent()) selected = selected->parent();
+        const QString target = selected ? selected->data(0, Qt::UserRole).toString()
+                                        : QString();
+        if (target.isEmpty() || !PlaylistModel::looks_like_playlist(target)) {
+            status(QStringLiteral("Please select a playlist"));
+            return;
+        }
+        if (current_source_.isEmpty()) {
+            status(QStringLiteral("No media item available"));
+            return;
+        }
+        PlaylistModel model;
+        std::string err = PlaylistModel::load_file(target, &model);
+        if (!err.empty()) {
+            status(QStringLiteral("Could not read playlist: %1")
+                       .arg(QString::fromStdString(err)));
+            return;
+        }
+        if (model.index_of(current_source_) >= 0) {
+            status(QStringLiteral("Media is already in the playlist"));
+            return;
+        }
+        model.add(current_source_, current_title_);
+        err = PlaylistModel::save_file(target, model);
+        if (!err.empty()) {
+            status(QStringLiteral("Could not update playlist: %1")
+                       .arg(QString::fromStdString(err)));
+            return;
+        }
+        refresh_playlist_group(target);
+        invalidate_seq();
+        status(QStringLiteral("Added media to %1").arg(QFileInfo(target).fileName()));
+    });
     layout->addWidget(header);
 
     playlist_view_ = new QueueTree(pane);
@@ -1893,7 +1961,19 @@ void MainWindow::build_epg_page() {
     auto* load_url_btn = new QPushButton(QStringLiteral("Load URL"), page);
     load_url_btn->setObjectName("IconButton");
     connect(load_url_btn, &QPushButton::clicked, this, [this] {
-        load_epg_source(epg_source_->text().trimmed());
+        const QString source = epg_source_->text().trimmed();
+        if (source.isEmpty()) {
+            epg_status_->setText(QStringLiteral("Please enter an IPTV playlist URL."));
+            return;
+        }
+        try {
+            load_epg_source(source);
+        } catch (const std::exception& e) {
+            epg_status_->setText(QStringLiteral("Load failed: %1")
+                                     .arg(QString::fromUtf8(e.what())));
+        } catch (...) {
+            epg_status_->setText(QStringLiteral("Load failed."));
+        }
     });
     source_row->addWidget(load_url_btn);
     outer->addLayout(source_row);
@@ -1922,12 +2002,23 @@ void MainWindow::on_epg_load() {
         this, QStringLiteral("Load playlist / guide"), QDir::homePath(),
         QStringLiteral("Playlists & guides (*.m3u *.m3u8 *.pls *.xspf *.wpl *.asx *.xml *.xmltv);;All files (*)"));
     if (file.isEmpty()) return;
-    load_epg_source(file);
+    try {
+        load_epg_source(file);
+    } catch (const std::exception& e) {
+        epg_status_->setText(QStringLiteral("Load failed: %1")
+                                 .arg(QString::fromUtf8(e.what())));
+    } catch (...) {
+        epg_status_->setText(QStringLiteral("Load failed."));
+    }
 }
 
 void MainWindow::load_epg_source(const QString& source) {
-    if (source.isEmpty()) return;
-    const QString lower = source.toLower();
+    const QString cleaned = source.trimmed();
+    if (cleaned.isEmpty()) {
+        epg_status_->setText(QStringLiteral("Please enter an IPTV playlist URL."));
+        return;
+    }
+    const QString lower = cleaned.toLower();
     // XMLTV guide.
     if (lower.endsWith(QStringLiteral(".xml")) || lower.endsWith(QStringLiteral(".xmltv"))) {
         QByteArray data;
@@ -1935,7 +2026,7 @@ void MainWindow::load_epg_source(const QString& source) {
         if (lower.startsWith(QStringLiteral("http://")) ||
             lower.startsWith(QStringLiteral("https://"))) {
             const casu::network::HttpResponse res =
-                casu::network::HttpClient().get(source.toStdString(), 30000);
+                casu::network::HttpClient().get(cleaned.toStdString(), 30000);
             if (!res.error.empty()) {
                 epg_status_->setText(QStringLiteral("Guide fetch failed: %1")
                                          .arg(QString::fromStdString(res.error)));
@@ -1944,9 +2035,9 @@ void MainWindow::load_epg_source(const QString& source) {
             data = QByteArray(reinterpret_cast<const char*>(res.body.data()),
                               static_cast<int>(res.body.size()));
         } else {
-            QFile f(source);
+            QFile f(cleaned);
             if (!f.open(QIODevice::ReadOnly)) {
-                epg_status_->setText(QStringLiteral("Could not read %1").arg(source));
+                epg_status_->setText(QStringLiteral("Could not read %1").arg(cleaned));
                 return;
             }
             data = f.readAll();
@@ -1966,7 +2057,7 @@ void MainWindow::load_epg_source(const QString& source) {
     if (lower.startsWith(QStringLiteral("http://")) ||
         lower.startsWith(QStringLiteral("https://"))) {
         const casu::network::HttpResponse res =
-            casu::network::HttpClient().get(source.toStdString(), 30000);
+            casu::network::HttpClient().get(cleaned.toStdString(), 30000);
         if (!res.error.empty()) {
             epg_status_->setText(QStringLiteral("Fetch failed: %1").arg(QString::fromStdString(res.error)));
             return;
@@ -1980,14 +2071,14 @@ void MainWindow::load_epg_source(const QString& source) {
             return;
         }
     } else {
-        const QString parse_err = mpcasu::load_m3u_file(source, &catalog);
+        const QString parse_err = mpcasu::load_m3u_file(cleaned, &catalog);
         if (!parse_err.isEmpty()) {
             epg_status_->setText(QStringLiteral("EPG error: %1").arg(parse_err));
             return;
         }
     }
     if (catalog.channels.isEmpty()) {
-        epg_status_->setText(QStringLiteral("No channels found in %1").arg(source));
+        epg_status_->setText(QStringLiteral("No channels found in %1").arg(cleaned));
         return;
     }
     epg_ = catalog;
@@ -2252,6 +2343,13 @@ void MainWindow::navigate(const QString& page) {
     if (target == QStringLiteral("NOW PLAYING") &&
         (page == QStringLiteral("PLAYLISTS") ||
          page == QStringLiteral("CASU FILES"))) {
+        if (page == QStringLiteral("PLAYLISTS")) {
+            scan_playlist_files();
+            for (const QString& path : playlist_files_)
+                if (playlist_.index_of(path) < 0) playlist_.add(path);
+            invalidate_seq();
+            refresh_playlist();
+        }
         set_queue_view_filter(page == QStringLiteral("PLAYLISTS")
                                   ? QStringLiteral("playlists")
                                   : QStringLiteral("casu"));
