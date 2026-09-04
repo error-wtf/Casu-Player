@@ -1,0 +1,8 @@
+#!/bin/sh
+export PYTHONDONTWRITEBYTECODE=1
+export PYTHONPATH=/usr/share/mpcasu-player${PYTHONPATH:+:$PYTHONPATH}
+if [ -z "${QT_QPA_PLATFORM:-}" ]; then
+  if [ -n "${DISPLAY:-}" ]; then export QT_QPA_PLATFORM=xcb; else export QT_QPA_PLATFORM=wayland; fi
+fi
+cd /
+exec /usr/bin/python3 -m mpcasu_qt.app "$@"

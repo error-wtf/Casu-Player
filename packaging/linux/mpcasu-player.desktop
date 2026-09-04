@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=MPCASU Player
+Comment=Cross-platform audio and video player
+Exec=mpcasu-player %U
+Icon=mpcasu-player
+Terminal=false
+Categories=AudioVideo;Player;
+MimeType=audio/*;video/*;application/x-mpegURL;application/vnd.apple.mpegurl;

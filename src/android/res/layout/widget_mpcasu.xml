@@ -1,0 +1,71 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- SPDX-License-Identifier: LicenseRef-CASU-AntiCapitalist-1.4 -->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/widget_root"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="horizontal"
+    android:gravity="center_vertical"
+    android:background="#E60B0D10"
+    android:paddingStart="10dp"
+    android:paddingEnd="6dp">
+
+    <LinearLayout
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_weight="1"
+        android:orientation="vertical">
+
+        <TextView
+            android:id="@+id/widget_title"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:singleLine="true"
+            android:ellipsize="marquee"
+            android:marqueeRepeatLimit="marquee_forever"
+            android:textColor="#F2F4F7"
+            android:textSize="13sp"
+            android:textStyle="bold"
+            android:text="@string/widget_idle_title"/>
+
+        <TextView
+            android:id="@+id/widget_state"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:singleLine="true"
+            android:textColor="#8A93A0"
+            android:textSize="11sp"
+            android:text="@string/widget_idle_state"/>
+    </LinearLayout>
+
+    <TextView
+        android:id="@+id/widget_prev"
+        android:layout_width="44dp"
+        android:layout_height="match_parent"
+        android:gravity="center"
+        android:text="⏮"
+        android:textSize="18sp"
+        android:textColor="#F2F4F7"
+        android:contentDescription="@string/widget_prev_desc"/>
+
+    <TextView
+        android:id="@+id/widget_play"
+        android:layout_width="48dp"
+        android:layout_height="match_parent"
+        android:gravity="center"
+        android:text="▶"
+        android:textSize="20sp"
+        android:textStyle="bold"
+        android:textColor="#FF1E2D"
+        android:contentDescription="@string/widget_play_desc"/>
+
+    <TextView
+        android:id="@+id/widget_next"
+        android:layout_width="44dp"
+        android:layout_height="match_parent"
+        android:gravity="center"
+        android:text="⏭"
+        android:textSize="18sp"
+        android:textColor="#F2F4F7"
+        android:contentDescription="@string/widget_next_desc"/>
+</LinearLayout>

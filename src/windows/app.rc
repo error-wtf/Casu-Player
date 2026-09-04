@@ -1,0 +1,6 @@
+// SPDX-License-Identifier: LicenseRef-CASU-AntiCapitalist-1.4
+// Windows resource: application icon (MPCASU). Mirrors the Linux desktop
+// entry icon (assets/mpcasu_player_icon.png → /usr/share/icons/hicolor).
+#include <windows.h>
+
+IDI_ICON1 ICON "assets/mpcasu_player_icon.ico"

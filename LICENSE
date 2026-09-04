@@ -1,0 +1,82 @@
+CASU — ALL RIGHTS RESERVED / ANTICAPITALIST LICENSE 1.4
+================================================================
+
+Copyright © 2026 Lino Casu. All rights reserved.
+
+This is a human-readable project license for CASU (Codec for All Segmented
+Units), its reference tools, MPCASU player code, documentation and tests.
+
+1. No default commercial grant
+--------------------------------
+No right to sell, sublicense, rent, lease, advertise, package as a paid
+service, or otherwise exploit this work commercially is granted by publishing
+or receiving this repository.
+
+2. Permitted use
+----------------
+Individuals may download, inspect, study, run and modify a private copy for
+personal, educational, accessibility, research and non-commercial community
+purposes, provided that this license and the attribution remain intact.
+
+3. Sharing and derivatives
+--------------------------
+Unmodified or modified copies may be shared only free of charge, with this
+license included in full and with clear attribution to Lino Casu. A derivative
+must identify its changes and must not imply endorsement by the author.
+
+4. Anti-capitalist condition
+----------------------------
+The work may not be used to create private monopoly control, surveillance,
+worker exploitation, paywalled access to the covered code, or a proprietary
+lock-in that removes the freedoms granted in section 2. Community access,
+mutual aid and non-commercial collective use are expressly permitted.
+
+5. Third-party material
+-----------------------
+This license applies only to material authored for this repository. Existing
+third-party libraries, codecs, trademarks, media and notices retain their own
+licenses. Users must comply with those licenses independently.
+
+5a. Attribution — where the ideas and templates came from
+---------------------------------------------------------
+Almost everything in this repository was programmed by the author, but it
+would not exist without the open-source ecosystem. In the spirit of honest
+attribution, the sources of inspiration, design templates and provider
+concepts are named explicitly:
+
+* VLC / libVLC (VideoLAN, LGPL-2.1-or-later / GPL-2.0-or-later): the desktop
+  player's feature model (track menus, EPG concepts, stream handling,
+  snapshot/A-B/equalizer ideas) and the in-process playback architecture were
+  studied from VLC. libVLC is used unmodified as a system runtime dependency.
+* Webamp (Jordan Eldredge / contributors, MIT license) and the classic
+  Winamp look: the red/dark skin language, visualizer aesthetics and the
+  compact player layout of MPCASU's web and desktop UI were inspired by
+  Webamp's Winamp-style design. No Webamp code is copied.
+* yt-dlp (yt-dlp contributors, The Unlicense): the YouTube provider —
+  metadata search and stream URL resolution — follows yt-dlp's documented
+  CLI behavior; yt-dlp is invoked as an external tool, never vendored.
+* spotDL (spotDL contributors, MIT license): the Spotify provider concept —
+  Spotify metadata matched onto YouTube audio sources (`spotdl save`,
+  `spotdl url`) — is realized through spotDL as an external, optional tool.
+
+No source code from VLC, Webamp, Winamp, yt-dlp, spotDL or any other
+third-party project is copied, vendored or derived in this repository — all
+CASU and MPCASU source files are original works of the author. VLC, Winamp
+and Spotify are trademarks of their respective owners; no affiliation or
+endorsement is implied. Runtime dependencies (libVLC, FFmpeg, PyAV, PySide6,
+yt-dlp, spotDL and others) remain separately licensed, unmodified external
+components; users must comply with their licenses (see
+THIRD_PARTY_COMPONENTS.md).
+
+6. No warranty
+--------------
+The work is provided “as is”, without warranty of any kind. The author is not
+liable for claims, damages or losses arising from its use.
+
+7. Version and precedence
+-------------------------
+This text is Anticapitalist License version 1.4 by Lino Casu. A later written
+license notice by the copyright holder may supersede it for a named release;
+otherwise this version remains the governing project license.
+
+For permissions outside these terms, contact the copyright holder.

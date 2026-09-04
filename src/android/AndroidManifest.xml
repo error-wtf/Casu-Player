@@ -1,0 +1,66 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- SPDX-License-Identifier: LicenseRef-CASU-AntiCapitalist-1.4 -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <uses-permission android:name="android.permission.INTERNET"/>
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK"/>
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"
+                     android:maxSdkVersion="32"/>
+    <uses-permission android:name="android.permission.READ_MEDIA_AUDIO"/>
+    <uses-permission android:name="android.permission.READ_MEDIA_VIDEO"/>
+    <uses-permission android:name="android.permission.WAKE_LOCK"/>
+    <application
+        android:name=".MpcasuApp"
+        android:label="MPCASU"
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:theme="@style/Theme.Casu"
+        android:usesCleartextTraffic="true"
+        android:hardwareAccelerated="true">
+        <activity android:name=".MainActivity"
+                  android:exported="true"
+                  android:launchMode="singleTask"
+                  android:configChanges="orientation|screenSize|keyboardHidden">
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW"/>
+                <category android:name="android.intent.category.DEFAULT"/>
+                <category android:name="android.intent.category.BROWSABLE"/>
+                <data android:mimeType="audio/*"/>
+                <data android:mimeType="video/*"/>
+                <data android:mimeType="application/x-mpegurl"/>
+                <data android:mimeType="application/vnd.apple.mpegurl"/>
+                <data android:mimeType="audio/x-mpegurl"/>
+                <data android:mimeType="audio/x-scpls"/>
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN"/>
+                <category android:name="android.intent.category.LAUNCHER"/>
+            </intent-filter>
+        </activity>
+
+        <activity android:name=".ProviderActivity"
+                  android:exported="false"
+                  android:configChanges="orientation|screenSize|keyboardHidden"/>
+
+        <!-- Foreground playback: engine + MediaSession + notification live here,
+             so the queue survives Activity death and app restarts. -->
+        <service android:name=".PlaybackService"
+                 android:exported="false"
+                 android:foregroundServiceType="mediaPlayback"/>
+
+        <!-- Home-screen widget (4×1): transport broadcasts + state push -->
+        <receiver android:name=".McasuWidgetProvider"
+                  android:exported="true"
+                  android:label="MPCASU">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE"/>
+                <action android:name="org.casu.mpcasu.WIDGET_PREV"/>
+                <action android:name="org.casu.mpcasu.WIDGET_PLAY"/>
+                <action android:name="org.casu.mpcasu.WIDGET_NEXT"/>
+            </intent-filter>
+            <meta-data android:name="android.appwidget.provider"
+                       android:resource="@xml/widget_info"/>
+        </receiver>
+    </application>
+</manifest>

@@ -1,0 +1,64 @@
+name: MPCASU
+options:
+  bundleIdPrefix: org.casu
+  deploymentTarget:
+    iOS: "17.0"
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    CURRENT_PROJECT_VERSION: 7
+    MARKETING_VERSION: 7.0.0
+targets:
+  MPCASU:
+    type: application
+    platform: iOS
+    sources: [MPCASU]
+    info:
+      path: MPCASU/Info.plist
+      properties:
+        CFBundleDisplayName: MPCASU
+        CFBundleShortVersionString: 7.0.0
+        CFBundleVersion: 7
+        UILaunchScreen: {}
+        UISupportsDocumentBrowser: true
+        UIFileSharingEnabled: true
+        LSSupportsOpeningDocumentsInPlace: true
+        UIBackgroundModes: [audio]
+        NSAppleMusicUsageDescription: MPCASU uses your media library to browse songs by artist, album, and genre.
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        UISupportedInterfaceOrientations~ipad:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        CFBundleDocumentTypes:
+          - CFBundleTypeName: Media
+            CFBundleTypeRole: Viewer
+            LSHandlerRank: Alternate
+            LSItemContentTypes: [public.audio, public.movie, public.playlist, public.data]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: org.casu.mpcasu
+        CODE_SIGN_ENTITLEMENTS: MPCASU/MPCASU.entitlements
+        CODE_SIGNING_ALLOWED: NO
+  MPCASUTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources: [MPCASUTests]
+    dependencies:
+      - target: MPCASU
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: org.casu.mpcasu.tests
+        CODE_SIGNING_ALLOWED: NO
+schemes:
+  MPCASU:
+    build:
+      targets:
+        MPCASU: all
+        MPCASUTests: [test]
+    test:
+      targets: [MPCASUTests]

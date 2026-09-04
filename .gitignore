@@ -1,0 +1,11 @@
+dist/
+build/
+*.pyc
+__pycache__/
+.DS_Store
+*.env
+workflow.env
+gittoken.env
+*.pem
+*.key
+.env

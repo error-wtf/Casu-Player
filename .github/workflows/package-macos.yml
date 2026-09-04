@@ -1,0 +1,38 @@
+name: Package macOS Player
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download verified Qt player bundle
+        env:
+          GH_TOKEN: ${{ secrets.PRIVATE_RELEASE_TOKEN }}
+        run: |
+          gh release download v7.0.0 --repo error-wtf/CASU-CODEC --pattern MPCASU-macOS-7.0.0.zip --dir "$RUNNER_TEMP"
+          ditto -x -k "$RUNNER_TEMP/MPCASU-macOS-7.0.0.zip" "$RUNNER_TEMP/app"
+      - name: Create player-only package
+        run: |
+          set -euo pipefail
+          app="$(find "$RUNNER_TEMP/app" -maxdepth 2 -type d -name 'MPCASU.app' -print -quit)"
+          test -n "$app"
+          stage="$RUNNER_TEMP/dmg"
+          mkdir -p "$stage" dist
+          ditto "$app" "$stage/MPCASU Player.app"
+          /usr/libexec/PlistBuddy -c 'Set :CFBundleDisplayName MPCASU Player' "$stage/MPCASU Player.app/Contents/Info.plist" || true
+          ln -s /Applications "$stage/Applications"
+          codesign --force --deep --sign - "$stage/MPCASU Player.app"
+          codesign --verify --deep --strict "$stage/MPCASU Player.app"
+          hdiutil create -quiet -volname 'MPCASU Player 7.0.0' -srcfolder "$stage" -ov -format UDZO dist/MPCASU-Player-macOS-7.0.0.dmg
+          ditto -c -k --keepParent "$stage/MPCASU Player.app" dist/MPCASU-Player-macOS-7.0.0.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mpcasu-player-macos
+          path: dist/*
+          if-no-files-found: error

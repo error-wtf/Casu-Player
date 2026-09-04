@@ -1,0 +1,68 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- SPDX-License-Identifier: LicenseRef-CASU-AntiCapitalist-1.4 -->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="horizontal"
+    android:gravity="center_vertical"
+    android:background="#0B0D10"
+    android:paddingStart="14dp"
+    android:paddingEnd="8dp"
+    android:paddingTop="10dp"
+    android:paddingBottom="10dp">
+
+    <LinearLayout
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_weight="1"
+        android:orientation="vertical">
+
+        <TextView
+            android:id="@+id/notif_title"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:singleLine="true"
+            android:ellipsize="end"
+            android:textColor="#F2F4F7"
+            android:textSize="14sp"
+            android:textStyle="bold"
+            android:text="MPCASU"/>
+
+        <TextView
+            android:id="@+id/notif_state"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:singleLine="true"
+            android:textColor="#8A93A0"
+            android:textSize="12sp"
+            android:text="MPCASU · Player"/>
+    </LinearLayout>
+
+    <TextView
+        android:id="@+id/notif_prev"
+        android:layout_width="44dp"
+        android:layout_height="match_parent"
+        android:gravity="center"
+        android:text="⏮"
+        android:textSize="18sp"
+        android:textColor="#F2F4F7"/>
+
+    <TextView
+        android:id="@+id/notif_play"
+        android:layout_width="48dp"
+        android:layout_height="match_parent"
+        android:gravity="center"
+        android:text="▶"
+        android:textSize="20sp"
+        android:textStyle="bold"
+        android:textColor="#FF1E2D"/>
+
+    <TextView
+        android:id="@+id/notif_next"
+        android:layout_width="44dp"
+        android:layout_height="match_parent"
+        android:gravity="center"
+        android:text="⏭"
+        android:textSize="18sp"
+        android:textColor="#F2F4F7"/>
+</LinearLayout>

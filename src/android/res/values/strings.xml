@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- SPDX-License-Identifier: LicenseRef-CASU-AntiCapitalist-1.4 -->
+<resources>
+    <string name="app_name">MPCASU</string>
+    <string name="widget_description">MPCASU transport controls</string>
+    <string name="widget_idle_title">MPCASU</string>
+    <string name="widget_idle_state">Nothing playing — tap to open</string>
+    <string name="widget_state_playing">Playing</string>
+    <string name="widget_state_paused">Paused</string>
+    <string name="widget_prev_desc">Previous track</string>
+    <string name="widget_play_desc">Play or pause</string>
+    <string name="widget_next_desc">Next track</string>
+</resources>
