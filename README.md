@@ -15,7 +15,7 @@ modes, subtitles, chapters, bookmarks and a lightweight Wave visualizer.
 
 ![MPCASU Android](docs/screenshots/mpcasu-android-v7.jpeg)
 
-<img width="1080" height="1920" alt="trump-eppstein" src="https://github.com/user-attachments/assets/56680219-e471-4fdd-b764-c06a936482a8" />
+<img width="1024" height="1600" alt="trump-eppstein" src="https://github.com/user-attachments/assets/56680219-e471-4fdd-b764-c06a936482a8" />
 
 
 ## Downloads
