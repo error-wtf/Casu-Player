@@ -47,11 +47,9 @@ WEB_PLAYERS: dict[str, dict] = {
     },
 }
 
-# Spotify and Tidal encrypt their audio with Widevine DRM, which the embedded
-# QtWebEngine build does not bundle; the system Chromium does. Those providers
-# therefore open in system Chromium (guaranteed playback with the user login),
-# while non-DRM providers stay embedded in the player.
-EXTERNAL_PROVIDERS = frozenset({"spotify", "tidal"})
+# These providers require DRM and/or browser capabilities which the embedded
+# QtWebEngine build does not provide. Open them in the system browser.
+EXTERNAL_PROVIDERS = frozenset({"spotify", "tidal", "netflix"})
 
 
 def chromium_binary() -> str | None:

@@ -17,6 +17,7 @@ targets:
       path: MPCASU/Info.plist
       properties:
         CFBundleDisplayName: MPCASU
+        MPCASUYouTubeAPIKey: $(YOUTUBE_API_KEY)
         CFBundleShortVersionString: 7.0.0
         CFBundleVersion: 7
         UILaunchScreen: {}

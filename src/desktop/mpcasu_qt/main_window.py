@@ -4207,9 +4207,17 @@ class MainWindow(QMainWindow):
         self._back_btn.show()
 
     def _open_web_player(self, provider: str, *, query: str = "", url: str = ""):
-        from casu.webproviders import WEB_PLAYERS
+        from casu.webproviders import EXTERNAL_PROVIDERS, WEB_PLAYERS, open_web_player
         label = ("BROWSE" if provider == "browse"
                  else WEB_PLAYERS.get(provider, WEB_PLAYERS["spotify"])["label"])
+        if provider in EXTERNAL_PROVIDERS:
+            if open_web_player(provider, query=query, url=url):
+                self.status(f"{label} im Systembrowser geöffnet")
+                self.toast(f"{label} im Systembrowser geöffnet")
+            else:
+                self.status(f"{label}: Kein unterstützter Systembrowser gefunden")
+                self.toast(f"{label} konnte nicht geöffnet werden")
+            return
         self._web_player_tabs.open(provider, query=query, url=url)
         self._center_stack.setCurrentWidget(self._web_player_tabs)
         self._topbar_title.setText(label)
