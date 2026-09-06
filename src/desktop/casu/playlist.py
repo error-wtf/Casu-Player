@@ -25,10 +25,10 @@ MAX_LINE_BYTES = 4096
 
 #: Native playlist file extensions understood by the loaders (for file dialogs).
 PLAYLIST_EXTENSIONS = (
-    "*.m3u *.m3u8 *.pls *.json *.wpl *.xspf *.jspf *.asx *.wmx *.wvx *.rmp *.ram"
+    "*.cue *.m3u *.m3u8 *.pls *.json *.wpl *.xspf *.jspf *.asx *.wmx *.wvx *.rmp *.ram"
 )
 PLAYLIST_SUFFIXES = frozenset({
-    ".m3u", ".m3u8", ".pls", ".json", ".wpl", ".xspf", ".jspf",
+    ".cue", ".m3u", ".m3u8", ".pls", ".json", ".wpl", ".xspf", ".jspf",
     ".asx", ".wmx", ".wvx", ".rmp", ".ram",
 })
 
@@ -274,7 +274,39 @@ def _parse_ram_entries(text: str, base: Path | None) -> list:
     return entries
 
 
+def _parse_json_entries(text: str, base: Path | None) -> list:
+    payload = json.loads(text)
+    if not isinstance(payload, dict) or not (payload.get("version") == 1 or payload.get("type") == "mpcasu-playlist"):
+        raise PlaylistError("unsupported playlist document")
+    values = payload.get("items")
+    if not isinstance(values, list) or len(values) > MAX_PLAYLIST_ITEMS:
+        raise PlaylistError("invalid playlist items")
+    result = []
+    for value in values:
+        title = ""
+        if isinstance(value, dict) and payload.get("type") == "mpcasu-playlist":
+            title = str(value.get("title") or "")
+            value = value.get("sourceUrl") or value.get("url") or value.get("path")
+        if not isinstance(value, str): raise PlaylistError("invalid playlist entry")
+        entry = _entry(value, base)
+        if entry is not None: result.append((entry, title))
+    return result
+
+
+def _parse_cue_entries(text: str, base: Path | None) -> list:
+    entries = []
+    for line in text.splitlines():
+        match = re.match(r'^\s*FILE\s+(?:"([^"]+)"|(\S+))\s+\S+\s*$', line, re.IGNORECASE)
+        if match:
+            source = _entry(match.group(1) or match.group(2), base)
+            if source is not None:
+                entries.append((source, ""))
+    return entries
+
+
 _PARSERS.update({
+    "json": _parse_json_entries,
+    "cue": _parse_cue_entries,
     "m3u": _parse_m3u_entries,
     "pls": _parse_pls_entries,
     "wpl": _parse_wpl_entries,
@@ -424,6 +456,8 @@ def detect_playlist_format(path: str | Path) -> str:
     if len(raw) > MAX_PLAYLIST_FILE_BYTES:
         raise PlaylistError("playlist exceeds safety limit")
     ext = source.suffix.lower()
+    if ext == ".cue":
+        return "cue"
     if ext in _EXT_M3U:
         return "m3u"
     if ext in _EXT_PLS:
@@ -513,19 +547,19 @@ def _read_bytes(path: str | Path) -> bytes:
 def load_playlist_file(path: str | Path, *, existing_only: bool = False) -> PlaylistModel:
     source = Path(path).expanduser().resolve()
     fmt = detect_playlist_format(source)
-    if fmt == "json":
-        try:
-            payload = read_bounded_json(source, max_bytes=MAX_PLAYLIST_FILE_BYTES,
-                                        label="playlist document")
-            return PlaylistModel.from_payload(payload, existing_only=existing_only)
-        except CasuError as exc:
-            raise PlaylistError(str(exc)) from exc
     parser = _PARSERS.get(fmt)
     if parser is None:
         raise PlaylistError(f"unknown playlist format: {source.suffix or 'content'}")
     raw = _read_bytes(source)
     try:
-        entries = parser(_decode(raw), source.parent)
+        if fmt == "json":
+            try:
+                text = raw.decode("utf-8-sig")
+            except UnicodeDecodeError as exc:
+                raise PlaylistError("playlist must be UTF-8 JSON") from exc
+        else:
+            text = _decode(raw)
+        entries = parser(text, source.parent)
     except ET.ParseError as exc:
         raise PlaylistError(f"malformed playlist XML: {exc}") from exc
     except (ValueError, TypeError, json.JSONDecodeError) as exc:
@@ -571,6 +605,20 @@ def save_playlist_file(path: str | Path, model: PlaylistModel) -> Path:
         lines.append("  </trackList>")
         lines.append("</playlist>")
         text = "\n".join(lines) + "\n"
+        if len(text.encode("utf-8")) > MAX_PLAYLIST_FILE_BYTES:
+            raise PlaylistError("playlist exceeds safety limit")
+        target.write_text(text, encoding="utf-8")
+        return target
+    text = None
+    if suffix in _EXT_WPL:
+        text = '<smil><body><seq>' + ''.join(f'<media src="{_xml_escape(str(item))}"/>' for item in model.items) + '</seq></body></smil>'
+    elif suffix in _EXT_ASX:
+        text = '<asx version="3.0">' + ''.join(f'<entry><ref href="{_xml_escape(str(item))}"/></entry>' for item in model.items) + '</asx>'
+    elif suffix in _EXT_JSPF:
+        text = json.dumps({"playlist": {"track": [{"location": [str(item)]} for item in model.items]}}, ensure_ascii=False)
+    elif suffix in _EXT_RMP:
+        text = "\n".join(str(item) for item in model.items) + "\n"
+    if text is not None:
         if len(text.encode("utf-8")) > MAX_PLAYLIST_FILE_BYTES:
             raise PlaylistError("playlist exceeds safety limit")
         target.write_text(text, encoding="utf-8")

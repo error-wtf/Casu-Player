@@ -181,6 +181,7 @@ private:
     // pages
     void on_library_add_current();
     void on_library_add_selected(QListWidgetItem* item);
+    void on_library_add_playlists();
     void scan_library_folders();
     void scan_playlist_files();
     void on_playlist_group_selected(QListWidgetItem* current);

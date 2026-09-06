@@ -280,6 +280,7 @@ public final class PlayerEngine implements
     public void rename(int position, String title) {
         if (position < 0 || position >= items.size() || title == null || title.trim().isEmpty()) return;
         items.get(position).title = title.trim();
+        items.get(position).metadataLoaded = true;
         persist();
         fireQueueChanged();
         if (position == index) fireItemChanged();

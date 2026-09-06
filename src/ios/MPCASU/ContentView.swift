@@ -74,8 +74,15 @@ struct ContentView: View {
             }
         } detail: {
             VStack(spacing: 20) {
-                VideoPlayer(player: model.player).accessibilityLabel("Video player")
+                if let artwork = model.currentArtwork, !model.currentHasVideo {
+                    Image(uiImage: artwork).resizable().scaledToFit()
+                        .frame(maxHeight: 320).accessibilityLabel("Album cover")
+                } else {
+                    VideoPlayer(player: model.player).accessibilityLabel("Video player")
+                }
                 Text(model.current?.title ?? "Open media to begin").font(.headline).lineLimit(2)
+                Text([model.current?.artist, model.current?.album].compactMap { $0 }.joined(separator: " · "))
+                    .font(.subheadline).foregroundStyle(.secondary).lineLimit(2)
                 Slider(value: Binding(get: { model.position }, set: model.seek), in: 0...max(1, model.duration))
                     .accessibilityIdentifier("playback.seek")
                 HStack {
@@ -236,18 +243,24 @@ struct ContentView: View {
                 } else {
                     List(library.visibleTracks) { track in
                         Button {
-                            guard let url = track.assetURL else {
-                                model.errorMessage = "This protected media item cannot be played."
-                                return
-                            }
-                            model.importURLs([url])
-                            if let item = model.queue.occurrences.last { model.select(item) }
+                            model.importLibraryTrack(track)
                         } label: {
-                            VStack(alignment: .leading) {
+                            HStack {
+                                if let data = track.artworkData, let image = UIImage(data: data) {
+                                    Image(uiImage: image).resizable().scaledToFill()
+                                        .frame(width: 48, height: 48).clipped().accessibilityLabel("Album cover")
+                                } else {
+                                    Image(systemName: "music.note").frame(width: 48, height: 48)
+                                }
+                                VStack(alignment: .leading) {
                                 Text(track.title)
                                 Text([track.artist, track.album, track.genre].joined(separator: " · "))
                                     .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                                }
                             }
+                        }
+                        .contextMenu {
+                            Button("Add to queue") { model.importLibraryTrack(track, selectItem: false) }
                         }
                         .swipeActions(edge: .leading) {
                             Button { library.toggleFavorite(track) } label: {
@@ -265,6 +278,9 @@ struct ContentView: View {
                 if library.selectedGroup != nil {
                     Button("All \(library.section.rawValue)") { library.selectedGroup = nil }
                 }
+                Button("Add to queue") {
+                    for track in library.visibleTracks { model.importLibraryTrack(track, selectItem: false) }
+                }.disabled(library.visibleTracks.isEmpty)
                 Button { library.refresh() } label: { Image(systemName: "arrow.clockwise") }
             }
             .task { library.refresh() }

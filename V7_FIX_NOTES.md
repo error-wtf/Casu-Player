@@ -16,3 +16,12 @@ Netflix und Spotify prüfen Konto, DRM-Komponente und Gerät selbst. Der DRM-Tes
 Die iOS-IPA ist wie bisher unsigniert und benötigt eine eigene Apple-Signierung. macOS-Pakete sind ad-hoc signiert, nicht mit einer Apple Developer ID notarisiert.
 
 Die verbindlichen Download-Prüfsummen stehen in `SHA256SUMS`.
+
+## Library, playlist import and mobile metadata refresh
+
+- Add whole playlists or selected tracks from Library to the queue; keep URLs and relative file paths intact and distinguish same-named playlists.
+- Support desktop/Android JSON interchange and CUE file references; desktop export also writes WPL, JSPF, ASX and RAM in their actual formats.
+- Android Library multi-select expands playlists and album/artist groups without interrupting playback.
+- Android and iOS read MP3 title, artist, album and embedded covers, display Library thumbnails and playback artwork, and prevent stale artwork after track changes.
+- iOS keeps imported documents readable after relaunch, preserves queue metadata, supports additional playlist formats and exposes Library queue actions.
+- The product version remains 7.0.0; in-app provider browsing remains enabled.

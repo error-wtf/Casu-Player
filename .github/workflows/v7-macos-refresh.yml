@@ -1,0 +1,74 @@
+name: V7 macOS refresh
+
+on:
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: write
+
+jobs:
+  package:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Prepare existing player runtime
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh run download 33866510343 --repo error-wtf/Casu-Player \
+            --name mpcasu-player-macos --dir "$RUNNER_TEMP/previous"
+          ditto -x -k "$RUNNER_TEMP/previous/MPCASU-Player-macOS-7.0.0.zip" \
+            "$RUNNER_TEMP/previous-app"
+      - name: Build current MPCASU desktop player
+        run: |
+          set -euo pipefail
+          python3 -m venv "$RUNNER_TEMP/venv"
+          source "$RUNNER_TEMP/venv/bin/activate"
+          python -m pip install --disable-pip-version-check \
+            'PySide6==6.10.2' python-vlc pyinstaller numpy zstd yt-dlp pytest
+          QT_QPA_PLATFORM=offscreen PYTHONPATH=src/desktop python -m pytest -q tests/test_inapp_browser.py tests/test_youtube_playlist_groups.py tests/test_library_queue_import.py
+          python -m PyInstaller --noconfirm --clean --windowed \
+            --name 'MPCASU Player' --paths src/desktop \
+            --add-data 'src/windows/assets:assets' src/desktop/mpcasu_qt/app.py
+          app='dist/MPCASU Player.app'
+          donor="$(find "$RUNNER_TEMP/previous-app" -type d \
+            -name 'MPCASU Player.app' -print -quit)"
+          test -d "$app"
+          test -d "$donor"
+          mkdir -p "$app/Contents/Frameworks" "$app/Contents/Helpers"
+          test ! -d "$donor/Contents/Frameworks/VLC" || \
+            ditto "$donor/Contents/Frameworks/VLC" "$app/Contents/Frameworks/VLC"
+          test ! -d "$donor/Contents/Frameworks/FFmpeg" || \
+            ditto "$donor/Contents/Frameworks/FFmpeg" "$app/Contents/Frameworks/FFmpeg"
+          test ! -d "$donor/Contents/Helpers" || \
+            ditto "$donor/Contents/Helpers" "$app/Contents/Helpers"
+          resources="$app/Contents/Resources"
+          mkdir -p "$resources/THIRD_PARTY_LICENSES"
+          ditto LICENSE "$resources/LICENSE.txt"
+          ditto DISCLAIMER.md "$resources/DISCLAIMER.md"
+          ditto THIRD_PARTY_COMPONENTS.md "$resources/THIRD_PARTY_COMPONENTS.md"
+          test ! -s THIRD_PARTY_SOURCE_OFFER.md || \
+            ditto THIRD_PARTY_SOURCE_OFFER.md "$resources/THIRD_PARTY_SOURCE_OFFER.md"
+          ditto THIRD_PARTY_LICENSES "$resources/THIRD_PARTY_LICENSES"
+          test ! -e "$app/Contents/MacOS/CASU-Converter"
+          test ! -e "$app/Contents/MacOS/casu"
+          test ! -e "$app/Contents/MacOS/CASU-Web-Backend"
+          codesign --force --deep --sign - "$app"
+          codesign --verify --deep --strict "$app"
+          stage="$RUNNER_TEMP/dmg"
+          mkdir -p "$stage"
+          ditto "$app" "$stage/MPCASU Player.app"
+          ln -s /Applications "$stage/Applications"
+          hdiutil create -quiet -volname 'MPCASU Player 7.0.0' \
+            -srcfolder "$stage" -ov -format UDZO \
+            dist/MPCASU-Player-macOS-7.0.0.dmg
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mpcasu-player-macos
+          path: dist/MPCASU-Player-macOS-7.0.0.dmg
+          if-no-files-found: error
+      - name: Replace v7 macOS asset
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload v7.0.0 dist/MPCASU-Player-macOS-7.0.0.dmg --clobber

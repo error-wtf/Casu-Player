@@ -2,7 +2,7 @@ name: V7 iOS package
 on:
   workflow_dispatch:
 permissions:
-  contents: read
+  contents: write
 jobs:
   package:
     runs-on: macos-15
@@ -34,3 +34,9 @@ jobs:
             dist/ios/*.zip
             dist/ios/*.ipa
           if-no-files-found: error
+      - name: Replace v7 iOS assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cp dist/ios/MPCASU-iOS-7.0.0.ipa dist/ios/MPCASU-Player-iOS-7.0.0.ipa
+          gh release upload v7.0.0 dist/ios/MPCASU-Player-iOS-7.0.0.ipa --clobber

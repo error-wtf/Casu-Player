@@ -15,7 +15,9 @@ struct MediaIdentity: Codable, Hashable {
 struct QueueOccurrence: Codable, Identifiable, Equatable {
     let id: UUID
     let media: MediaIdentity
-    let title: String
+    var title: String
+    var artist: String?
+    var album: String?
     let url: URL
     let playlistID: String?
     let playlistTitle: String?

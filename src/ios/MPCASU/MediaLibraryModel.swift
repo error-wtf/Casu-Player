@@ -9,6 +9,7 @@ struct LibraryTrack: Identifiable, Equatable {
     let genre: String
     let trackNumber: Int
     let assetURL: URL?
+    var artworkData: Data? = nil
 }
 
 enum LibrarySection: String, CaseIterable, Identifiable {
@@ -52,7 +53,8 @@ final class MediaLibraryModel: ObservableObject {
                                  album: $0.albumTitle ?? "Unknown Album",
                                  genre: $0.genre ?? "Unknown Genre",
                                  trackNumber: $0.albumTrackNumber,
-                                 assetURL: $0.assetURL)
+                                 assetURL: $0.assetURL,
+                                 artworkData: $0.artwork?.image(at: CGSize(width: 128, height: 128))?.pngData())
                 }.sorted { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
             }
         }

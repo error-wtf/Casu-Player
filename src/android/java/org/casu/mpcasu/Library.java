@@ -62,6 +62,7 @@ public final class Library {
             MediaItem item = new MediaItem(uri, title, video ? "video" : "audio",
                     video ? "VIDEO" : "AUDIO");
             item.artist = artist != null && !artist.isEmpty() ? artist : null;
+            item.album = album;
             return item;
         }
     }

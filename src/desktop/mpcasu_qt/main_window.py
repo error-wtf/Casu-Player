@@ -464,7 +464,7 @@ class PlaylistPane(QFrame):
     newPlaylistRequested = Signal()
     addCurrentToPlaylistRequested = Signal()
 
-    PLAYLIST_SUFFIXES = {".m3u", ".m3u8", ".pls", ".json", ".wpl", ".xspf",
+    PLAYLIST_SUFFIXES = {".cue", ".m3u", ".m3u8", ".pls", ".json", ".wpl", ".xspf",
                          ".jspf", ".asx", ".wmx", ".wvx", ".rmp", ".ram"}
 
     def __init__(self, parent=None):
@@ -1427,6 +1427,10 @@ class LibraryPage(QFrame):
         self._splitter = split
         self._groups_list = QListWidget()
         self._groups_list.setObjectName("QueueTree")
+        self._groups_list.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        self._groups_list.itemDoubleClicked.connect(lambda _item: self._add_playlist_groups())
+        self._groups_list.setContextMenuPolicy(Qt.CustomContextMenu)
+        self._groups_list.customContextMenuRequested.connect(self._playlist_group_menu)
         self._groups_list.currentItemChanged.connect(self._on_group_selected)
         split.addWidget(self._groups_list)
 
@@ -1452,6 +1456,10 @@ class LibraryPage(QFrame):
         add_btn.setObjectName("PrimaryButton")
         add_btn.clicked.connect(self._add_selected)
         bottom.addWidget(add_btn)
+        self._add_playlist_btn = QPushButton("Add playlist(s) to queue")
+        self._add_playlist_btn.setObjectName("PrimaryButton")
+        self._add_playlist_btn.clicked.connect(self._add_playlist_groups)
+        bottom.addWidget(self._add_playlist_btn)
         self._add_btn = add_btn
         self._new_playlist_btn = QPushButton("New playlist")
         self._new_playlist_btn.setObjectName("PrimaryButton")
@@ -1562,8 +1570,9 @@ class LibraryPage(QFrame):
     def _refresh(self):
         query = self._query()
         mode = self._mode()
+        self._add_playlist_btn.setVisible(mode == "playlists")
         playlist_mode = mode == "playlists"
-        self._add_btn.setVisible(not playlist_mode)
+        self._add_btn.setVisible(True)
         self._new_playlist_btn.setVisible(playlist_mode)
         self._playlist_add_current_btn.setVisible(playlist_mode)
         self._playlist_remove_btn.setVisible(playlist_mode)
@@ -1661,106 +1670,87 @@ class LibraryPage(QFrame):
         self._count_label.setText(f"{len(self._tracks)} tracks")
 
     def _scan_playlist_files(self):
+        from casu.playlist import PLAYLIST_SUFFIXES
         self._groups_list.blockSignals(True)
         self._groups_list.clear()
         self._playlist_files.clear()
-        playlist_exts = {".m3u", ".m3u8", ".pls", ".xspf", ".cue"}
-        folders = []
-        if self._settings_store is not None:
-            try:
-                settings = self._settings_store.load()
-                folders = list(settings.watched_folders)
-            except Exception:
-                pass
+        folders = list(self._settings_store.load().watched_folders) if self._settings_store else []
         if not folders:
             folders = [str(Path.home())]
-        for folder in folders:
-            fpath = Path(folder)
-            if not fpath.is_dir():
-                continue
+        data = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local/share")) / "mpcasu/youtube-playlists"
+        candidates = list(Path.home().glob("*"))
+        for folder in [*folders, str(data)]:
             try:
-                for p in sorted(fpath.rglob("*")):
-                    try:
-                        if p.suffix.lower() in playlist_exts and p.is_file():
-                            name = p.stem
-                            label = name
-                            counter = 2
-                            while label in self._playlist_files:
-                                label = f"{name} ({counter})"
-                                counter += 1
-                            self._playlist_files[label] = p
-                            row = QListWidgetItem(label)
-                            row.setToolTip(str(p))
-                            self._groups_list.addItem(row)
-                    except (PermissionError, OSError):
-                        continue
-            except (PermissionError, OSError):
+                candidates.extend(Path(folder).expanduser().rglob("*"))
+            except OSError:
+                continue
+        seen = set()
+        for path in sorted(candidates):
+            try:
+                if path.suffix.lower() not in PLAYLIST_SUFFIXES or not path.is_file():
+                    continue
+                path = path.resolve()
+                if path in seen: continue
+                seen.add(path)
+                if self._query() and self._query() not in path.stem.casefold(): continue
+                label = path.stem
+                counter = 2
+                while label in self._playlist_files:
+                    label = f"{path.stem} ({counter})"
+                    counter += 1
+                self._playlist_files[label] = path
+                row = QListWidgetItem(label)
+                row.setData(Qt.UserRole, path)
+                row.setToolTip(str(path))
+                self._groups_list.addItem(row)
+            except OSError:
                 continue
         self._groups_list.blockSignals(False)
         self._groups_list.setEnabled(True)
-        if self._groups_list.count() > 0:
-            self._groups_list.setCurrentRow(0)
-            self._on_playlist_group_selected(self._groups_list.item(0))
-        else:
-            self._count_label.setText("No playlist files found")
+        if self._groups_list.count(): self._groups_list.setCurrentRow(0)
+        else: self._count_label.setText("No playlist files found")
 
     def _on_playlist_group_selected(self, current):
-        if current is None:
-            return
-        name = current.text()
-        pl_path = self._playlist_files.get(name)
-        if pl_path is None or not pl_path.is_file():
-            return
         self._tracks.clear()
         self._tracks_list.clear()
-        entries = self._parse_playlist_file(pl_path)
-        lib_items = self._media_library.items()
-        for entry_path in entries:
-            resolved = str(Path(entry_path).expanduser().resolve())
-            lib_item = None
-            for it in lib_items:
-                if str(it.path) == resolved:
-                    lib_item = it
-                    break
-            if lib_item is None:
-                from casu.library import LibraryItem as LI
-                lib_item = LI(Path(resolved), 0, 0, False, 0.0, None, {})
-            self._append_track(lib_item)
+        if current is None: return
+        path = self._playlist_files.get(current.text())
+        if path is None: return
+        try:
+            entries = self._parse_playlist_file(path)
+        except (OSError, ValueError, PlaylistError) as error:
+            self._count_label.setText(f"Cannot read playlist: {error}")
+            return
+        titles = playlist_names(path)
+        for source in entries:
+            label = titles.get(str(source)) or (source.name if isinstance(source, Path) else str(source))
+            row = QListWidgetItem(label)
+            row.setData(Qt.UserRole, source)
+            row.setToolTip(str(source))
+            self._tracks_list.addItem(row)
+            self._tracks.append(source)
         self._count_label.setText(f"{len(self._tracks)} tracks")
 
     @staticmethod
-    def _parse_playlist_file(path: Path) -> list[str]:
-        ext = path.suffix.lower()
-        entries: list[str] = []
-        try:
-            text = path.read_text(encoding="utf-8", errors="replace")
-        except Exception:
-            return entries
-        if ext in (".m3u", ".m3u8"):
-            for line in text.splitlines():
-                line = line.strip()
-                if line and not line.startswith("#"):
-                    entries.append(line)
-        elif ext == ".pls":
-            for line in text.splitlines():
-                line = line.strip()
-                if line.lower().startswith("file"):
-                    eq = line.find("=")
-                    if eq >= 0:
-                        entries.append(line[eq + 1:].strip().strip('"'))
-        elif ext == ".xspf":
-            import re
-            for m in re.finditer(r"<location>(.*?)</location>", text, re.IGNORECASE):
-                entries.append(m.group(1).strip())
-        elif ext == ".cue":
-            for line in text.splitlines():
-                line = line.strip()
-                if line.upper().startswith("FILE "):
-                    parts = line.split(None, 1)
-                    if len(parts) >= 2:
-                        fname = parts[1].rsplit(None, 1)[0].strip('"')
-                        entries.append(fname)
-        return entries
+    def _parse_playlist_file(path: Path) -> list:
+        return list(load_playlist_file(path).items)
+
+    def _add_playlist_groups(self):
+        if self._mode() != "playlists": return
+        selected = self._groups_list.selectedItems()
+        if not selected and self._groups_list.currentItem():
+            selected = [self._groups_list.currentItem()]
+        paths = [self._playlist_files[item.text()] for item in selected if item.text() in self._playlist_files]
+        if paths: self.addRequested.emit(paths)
+
+    def _playlist_group_menu(self, position):
+        if self._mode() != "playlists": return
+        item = self._groups_list.itemAt(position)
+        if item is None: return
+        if not item.isSelected(): self._groups_list.setCurrentItem(item)
+        menu = QMenu(self)
+        menu.addAction("Add playlist(s) to queue", self._add_playlist_groups)
+        menu.exec(self._groups_list.viewport().mapToGlobal(position))
 
     def _add_selected(self, *_args):
         selected = self._tracks_list.selectedItems()
@@ -1775,6 +1765,8 @@ class LibraryPage(QFrame):
                 paths.append(self._tracks[row])
         if paths:
             self.addRequested.emit(paths)
+        elif self._mode() == "playlists":
+            self._add_playlist_groups()
 
     def show_playlists(self):
         for index in range(self._mode_combo.count()):
@@ -1804,6 +1796,7 @@ class LibraryPage(QFrame):
     def _play_playlist_selection(self):
         entries = self._selected_playlist_entries()
         if entries:
+            self.addRequested.emit(entries)
             self.playlistPlayRequested.emit(entries[0])
 
     def _remove_playlist_selection(self):

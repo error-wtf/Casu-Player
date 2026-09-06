@@ -41,7 +41,7 @@ public final class PlaylistIO {
     }
 
     public static final String[] SUFFIXES = {
-            ".m3u", ".m3u8", ".pls", ".xspf", ".jspf", ".asx", ".wmx", ".wvx",
+            ".cue", ".m3u", ".m3u8", ".pls", ".xspf", ".jspf", ".asx", ".wmx", ".wvx",
             ".wpl", ".rmp", ".ram", ".json"
     };
 
@@ -65,7 +65,14 @@ public final class PlaylistIO {
         String text = fetcher.fetch(location);
         String low = location == null ? "" : location.toLowerCase();
         Playlist playlist;
-        if (text.contains("#EXTM3U") || low.endsWith(".m3u") || low.endsWith(".m3u8")) {
+        if (low.endsWith(".cue")) {
+            playlist = new Playlist();
+            java.util.regex.Pattern pattern = java.util.regex.Pattern.compile("(?i)^\\s*FILE\\s+(?:\"([^\"]+)\"|(\\S+))\\s+\\S+\\s*$");
+            for (String line : text.split("\n")) {
+                java.util.regex.Matcher match = pattern.matcher(line);
+                if (match.matches()) playlist.items.add(new Entry(match.group(1) != null ? match.group(1) : match.group(2), ""));
+            }
+        } else if (text.contains("#EXTM3U") || low.endsWith(".m3u") || low.endsWith(".m3u8")) {
             playlist = parseM3u(text);
         } else if (low.endsWith(".pls") || text.startsWith("[playlist]")) {
             playlist = parsePls(text);
@@ -227,8 +234,12 @@ public final class PlaylistIO {
         if (items == null) return out;
         for (int i = 0; i < items.length(); i++) {
             JSONObject item = items.optJSONObject(i);
-            if (item == null) continue;
-            String url = item.optString("url", item.optString("path", ""));
+            if (item == null) {
+                Object value = items.opt(i);
+                if (value instanceof String && !((String) value).isEmpty()) out.items.add(new Entry((String) value, ""));
+                continue;
+            }
+            String url = item.optString("sourceUrl", item.optString("url", item.optString("path", "")));
             if (!url.isEmpty()) {
                 out.items.add(new Entry(url, item.optString("title", "")));
             }

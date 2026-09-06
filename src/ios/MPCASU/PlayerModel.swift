@@ -6,6 +6,8 @@ import UniformTypeIdentifiers
 @MainActor
 final class PlayerModel: ObservableObject {
     @Published private(set) var queue = QueueSnapshot()
+    @Published private(set) var currentArtwork: UIImage?
+    @Published private(set) var currentHasVideo = true
     @Published private(set) var isPlaying = false
     @Published var errorMessage: String?
     @Published private(set) var position: Double = 0
@@ -55,27 +57,37 @@ final class PlayerModel: ObservableObject {
         }
     }
 
+    private func accessibleCopy(_ url: URL) throws -> URL {
+        guard url.isFileURL else { return url }
+        let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        if url.standardizedFileURL.path.hasPrefix(documents.standardizedFileURL.path + "/") { return url }
+        let folder = documents.appendingPathComponent("ImportedMedia/" + UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let destination = folder.appendingPathComponent(url.lastPathComponent)
+        try FileManager.default.copyItem(at: url, to: destination)
+        return destination
+    }
+
     func importURLs(_ urls: [URL]) {
         for url in urls {
             let scoped = url.startAccessingSecurityScopedResource()
             defer { if scoped { url.stopAccessingSecurityScopedResource() } }
-            let canonical = url.standardizedFileURL.absoluteString
-            let identity = MediaIdentity(kind: url.isFileURL ? .local : .network, canonicalKey: canonical)
-            queue.occurrences.append(QueueOccurrence(media: identity, title: url.deletingPathExtension().lastPathComponent, url: url))
+            do {
+                let readable = try accessibleCopy(url)
+                append(title: url.deletingPathExtension().lastPathComponent, url: readable,
+                       kind: url.isFileURL ? .local : .network)
+            } catch { errorMessage = "Media import failed: \(error.localizedDescription)" }
         }
-        if queue.currentOccurrenceID == nil { queue.currentOccurrenceID = queue.occurrences.first?.id }
-        persist()
     }
 
     func importDocuments(_ urls: [URL]) async {
         for url in urls {
             let scoped = url.startAccessingSecurityScopedResource()
             defer { if scoped { url.stopAccessingSecurityScopedResource() } }
-            if ["m3u", "m3u8", "pls"].contains(url.pathExtension.lowercased()) {
+            if PlaylistImporter.extensions.contains(url.pathExtension.lowercased()) {
                 await importPlaylist(url)
             } else {
-                append(title: url.deletingPathExtension().lastPathComponent, url: url,
-                       kind: url.isFileURL ? .local : .network)
+                importURLs([url])
             }
         }
     }
@@ -84,6 +96,7 @@ final class PlayerModel: ObservableObject {
         let identity = MediaIdentity(kind: kind, canonicalKey: url.absoluteString)
         let occurrence = QueueOccurrence(media: identity, title: title, url: url, playlistID: playlistID, playlistTitle: playlistTitle)
         queue.occurrences.append(occurrence)
+        Task { await hydrate(occurrence) }
         if queue.currentOccurrenceID == nil || play { select(occurrence) }
         persist()
         if play { player.play(); isPlaying = true }
@@ -92,7 +105,13 @@ final class PlayerModel: ObservableObject {
     func importPlaylist(_ url: URL) async {
         do {
             let entries = try await PlaylistImporter.load(url)
-            for entry in entries { append(title: entry.title, url: entry.url) }
+            let groupID = UUID().uuidString
+            let groupTitle = url.deletingPathExtension().lastPathComponent
+            for entry in entries {
+                let readable = try accessibleCopy(entry.url)
+                append(title: entry.title, url: readable, kind: readable.isFileURL ? .local : .network,
+                       playlistID: groupID, playlistTitle: groupTitle)
+            }
         } catch { errorMessage = "Playlist import failed: \(error.localizedDescription)" }
     }
 
@@ -124,6 +143,9 @@ final class PlayerModel: ObservableObject {
         providerGeneration += 1
         let generation = providerGeneration
         queue.currentOccurrenceID = occurrence.id
+        currentArtwork = nil
+        currentHasVideo = true
+        Task { await hydrate(occurrence, generation: generation) }
         if let videoID = YouTubeClient.videoID(occurrence.url) {
             player.replaceCurrentItem(with: nil)
             Task {
@@ -140,6 +162,38 @@ final class PlayerModel: ObservableObject {
             }
         } else { player.replaceCurrentItem(with: AVPlayerItem(url: occurrence.url)) }
         updateNowPlaying(occurrence)
+        persist()
+    }
+
+    private func hydrate(_ occurrence: QueueOccurrence, generation: Int? = nil) async {
+        guard let metadata = await MediaMetadata.load(occurrence.url),
+              let index = queue.occurrences.firstIndex(where: { $0.id == occurrence.id }) else { return }
+        if let title = metadata.title { queue.occurrences[index].title = title }
+        if let artist = metadata.artist { queue.occurrences[index].artist = artist }
+        if let album = metadata.album { queue.occurrences[index].album = album }
+        persist()
+        if queue.currentOccurrenceID == occurrence.id && (generation == nil || generation == providerGeneration) {
+            currentArtwork = metadata.artwork ?? currentArtwork
+            currentHasVideo = metadata.hasVideo
+            refreshNowPlaying()
+        }
+    }
+
+    func importLibraryTrack(_ track: LibraryTrack, selectItem: Bool = true) {
+        guard let url = track.assetURL else {
+            errorMessage = "This protected media item cannot be played."
+            return
+        }
+        append(title: track.title, url: url, kind: .local)
+        guard let index = queue.occurrences.indices.last else { return }
+        queue.occurrences[index].artist = track.artist
+        queue.occurrences[index].album = track.album
+        if selectItem {
+            select(queue.occurrences[index])
+            currentArtwork = track.artworkData.flatMap(UIImage.init(data:))
+            currentHasVideo = false
+            refreshNowPlaying()
+        }
         persist()
     }
 
@@ -227,12 +281,18 @@ final class PlayerModel: ObservableObject {
     }
 
     private func updateNowPlaying(_ occurrence: QueueOccurrence) {
-        MPNowPlayingInfoCenter.default().nowPlayingInfo = [
+        var info: [String: Any] = [
             MPMediaItemPropertyTitle: occurrence.title,
+            MPMediaItemPropertyArtist: occurrence.artist ?? "",
+            MPMediaItemPropertyAlbumTitle: occurrence.album ?? "",
             MPNowPlayingInfoPropertyElapsedPlaybackTime: position,
             MPMediaItemPropertyPlaybackDuration: duration,
             MPNowPlayingInfoPropertyPlaybackRate: isPlaying ? playbackRate : 0,
         ]
+        if let artwork = currentArtwork {
+            info[MPMediaItemPropertyArtwork] = MPMediaItemArtwork(boundsSize: artwork.size) { _ in artwork }
+        }
+        MPNowPlayingInfoCenter.default().nowPlayingInfo = info
     }
 
     private func refreshNowPlaying() {

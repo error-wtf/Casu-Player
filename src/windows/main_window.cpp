@@ -1590,6 +1590,18 @@ void MainWindow::build_library_page() {
                 if (mode == "playlists") on_playlist_group_selected(current);
                 else refresh_library();
             });
+    library_groups_->setSelectionMode(QAbstractItemView::ExtendedSelection);
+    connect(library_groups_, &QListWidget::itemDoubleClicked, this, [this](QListWidgetItem*) { on_library_add_playlists(); });
+    library_groups_->setContextMenuPolicy(Qt::CustomContextMenu);
+    connect(library_groups_, &QListWidget::customContextMenuRequested, this, [this](const QPoint& pos) {
+        if (library_mode_->currentData().toString() != "playlists") return;
+        auto* item = library_groups_->itemAt(pos);
+        if (!item) return;
+        if (!item->isSelected()) library_groups_->setCurrentItem(item);
+        QMenu menu(library_groups_);
+        menu.addAction(QStringLiteral("Add playlist(s) to queue"), this, &MainWindow::on_library_add_playlists);
+        menu.exec(library_groups_->viewport()->mapToGlobal(pos));
+    });
     split->addWidget(library_groups_);
     library_tracks_ = new QListWidget(split);
     library_tracks_->setObjectName("QueueTree");
@@ -1659,6 +1671,14 @@ void MainWindow::build_library_page() {
     connect(add_btn, &QPushButton::clicked, this,
             [this] { on_library_add_selected(library_tracks_->currentItem()); });
     bottom->addWidget(add_btn);
+    auto* add_playlists = new QPushButton(QStringLiteral("Add playlist(s) to queue"), page);
+    add_playlists->setObjectName("PrimaryButton");
+    connect(add_playlists, &QPushButton::clicked, this, &MainWindow::on_library_add_playlists);
+    connect(library_mode_, &QComboBox::currentIndexChanged, add_playlists, [this, add_playlists](int) {
+        add_playlists->setVisible(library_mode_->currentData().toString() == "playlists");
+    });
+    add_playlists->setVisible(false);
+    bottom->addWidget(add_playlists);
     layout->addLayout(bottom);
 
     auto* folders_label = new QLabel(QStringLiteral("WATCHED FOLDERS"), page);
@@ -1704,10 +1724,22 @@ void MainWindow::build_library_page() {
     pages_->addWidget(page);
 }
 
+void MainWindow::on_library_add_playlists() {
+    if (library_mode_->currentData().toString() != "playlists") return;
+    auto selected = library_groups_->selectedItems();
+    if (selected.isEmpty() && library_groups_->currentItem()) selected.append(library_groups_->currentItem());
+    QStringList paths;
+    for (auto* item : selected) {
+        const QString path = playlist_files_.value(item->text());
+        if (!path.isEmpty()) paths.append(path);
+    }
+    if (!paths.isEmpty()) add_files(paths);
+}
+
 void MainWindow::on_library_add_selected(QListWidgetItem* item) {
     QList<QListWidgetItem*> sel = library_tracks_->selectedItems();
     if (sel.isEmpty() && item) sel.append(item);
-    if (sel.isEmpty()) return;
+    if (sel.isEmpty()) { on_library_add_playlists(); return; }
     QStringList paths;
     for (auto* s : sel) {
         const QString p = s->data(Qt::UserRole).toString();
@@ -4147,21 +4179,30 @@ void MainWindow::scan_playlist_files() {
     library_groups_->blockSignals(true);
     library_groups_->clear();
     playlist_files_.clear();
-    const QStringList exts = {".m3u", ".m3u8", ".pls", ".xspf", ".cue"};
+    const QStringList exts = {".m3u", ".m3u8", ".pls", ".xspf", ".cue", ".json", ".jspf", ".asx", ".wmx", ".wvx", ".wpl", ".rmp", ".ram"};
     QStringList folders = app_settings_.player.watched_folders;
-    if (folders.isEmpty()) folders << QDir::homePath();
+    const bool scanHomeRecursively = folders.isEmpty();
+    if (!folders.contains(QDir::homePath())) folders << QDir::homePath();
+    folders << QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) + QStringLiteral("/youtube-playlists");
+    folders.removeDuplicates();
     for (const QString& folder : folders) {
         QDir dir(folder);
         if (!dir.exists()) continue;
         QDirIterator it(dir.absolutePath(), QStringList(), QDir::Files,
-                        QDirIterator::Subdirectories);
+                        folder == QDir::homePath() && !scanHomeRecursively
+                            ? QDirIterator::NoIteratorFlags : QDirIterator::Subdirectories);
         while (it.hasNext()) {
             const QString fp = it.next();
             const QString ext = QFileInfo(fp).suffix().toLower();
             if (exts.contains(QLatin1Char('.') + ext)) {
-                const QString name = QFileInfo(fp).baseName();
+                if (playlist_files_.values().contains(fp)) continue;
+                const QString stem = QFileInfo(fp).completeBaseName();
+                QString name = stem;
+                int counter = 2;
+                while (playlist_files_.contains(name)) name = QStringLiteral("%1 (%2)").arg(stem).arg(counter++);
                 playlist_files_[name] = fp;
-                library_groups_->addItem(name);
+                auto* row = new QListWidgetItem(name, library_groups_);
+                row->setToolTip(fp);
             }
         }
     }
@@ -4175,75 +4216,22 @@ void MainWindow::scan_playlist_files() {
     }
 }
 
-static QStringList parse_playlist_file(const QString& path) {
-    QStringList entries;
-    QFile f(path);
-    if (!f.open(QIODevice::ReadOnly | QIODevice::Text)) return entries;
-    const QString text = QString::fromUtf8(f.readAll());
-    const QString ext = QFileInfo(path).suffix().toLower();
-    const QStringList lines = text.split(QLatin1Char('\n'));
-    if (ext == "m3u" || ext == "m3u8") {
-        for (const QString& line : lines) {
-            const QString trimmed = line.trimmed();
-            if (!trimmed.isEmpty() && !trimmed.startsWith('#'))
-                entries.append(trimmed);
-        }
-    } else if (ext == "pls") {
-        for (const QString& line : lines) {
-            const QString trimmed = line.trimmed();
-            if (trimmed.toLower().startsWith("file")) {
-                const int eq = trimmed.indexOf('=');
-                if (eq >= 0) {
-                    QString val = trimmed.mid(eq + 1).trimmed();
-                    if (val.startsWith('"') && val.endsWith('"'))
-                        val = val.mid(1, val.length() - 2);
-                    entries.append(val);
-                }
-            }
-        }
-    } else if (ext == "xspf") {
-        QRegularExpression re("<location>(.*?)</location>",
-                              QRegularExpression::CaseInsensitiveOption);
-        QRegularExpressionMatchIterator it = re.globalMatch(text);
-        while (it.hasNext()) {
-            entries.append(it.next().captured(1).trimmed());
-        }
-    } else if (ext == "cue") {
-        for (const QString& line : lines) {
-            const QString trimmed = line.trimmed();
-            if (trimmed.toUpper().startsWith("FILE ")) {
-                const QStringList parts = trimmed.split(QLatin1Char(' '));
-                if (parts.size() >= 2) {
-                    QString fname = parts.mid(1).join(QLatin1Char(' '));
-                    // Remove trailing type: "FILE "name" AUDIO"
-                    const int lastQuote = fname.lastIndexOf('"');
-                    if (lastQuote > 0) fname = fname.left(lastQuote);
-                    if (fname.startsWith('"')) fname = fname.mid(1);
-                    entries.append(fname);
-                }
-            }
-        }
-    }
-    return entries;
-}
-
 void MainWindow::on_playlist_group_selected(QListWidgetItem* current) {
-    if (!current) return;
-    const QString name = current->text();
-    const QString plPath = playlist_files_.value(name);
-    if (plPath.isEmpty() || !QFileInfo::exists(plPath)) return;
     library_tracks_->clear();
-    const QStringList entries = parse_playlist_file(plPath);
-    int shown = 0;
-    for (const QString& entry : entries) {
-        const QString resolved = QFileInfo(entry).absoluteFilePath();
-        const QString text = QFileInfo(resolved).fileName();
-        auto* item = new QListWidgetItem(text);
-        item->setData(Qt::UserRole, resolved);
-        library_tracks_->addItem(item);
-        ++shown;
+    if (!current) return;
+    const QString path = playlist_files_.value(current->text());
+    PlaylistModel entries;
+    const auto error = PlaylistModel::load_file(path, &entries);
+    if (!error.empty()) {
+        library_count_->setText(QString::fromStdString(error));
+        return;
     }
-    library_count_->setText(QStringLiteral("%1 tracks").arg(shown));
+    for (const auto& entry : entries.items()) {
+        auto* row = new QListWidgetItem(entry.title, library_tracks_);
+        row->setData(Qt::UserRole, entry.path);
+        row->setToolTip(entry.path);
+    }
+    library_count_->setText(QStringLiteral("%1 tracks").arg(entries.items().size()));
 }
 
 void MainWindow::on_settings_save() {

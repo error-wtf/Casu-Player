@@ -296,6 +296,18 @@ PlFormat sniff_format(const QString& file) {
 
 std::string PlaylistModel::load_file(const QString& file, PlaylistModel* out) {
     QString lower = file.toLower();
+    if (lower.endsWith(".cue")) {
+        QFile input(file);
+        if (!input.open(QIODevice::ReadOnly)) return "could not open CUE playlist";
+        const QString text = QString::fromUtf8(input.readAll());
+        const QRegularExpression pattern(QStringLiteral(R"cue(^\s*FILE\s+(?:"([^"]+)"|(\S+))\s+\S+\s*$)cue"), QRegularExpression::CaseInsensitiveOption);
+        out->clear();
+        for (const QString& line : text.split('\n')) {
+            const auto match = pattern.match(line);
+            if (match.hasMatch()) out->add(resolve_entry(match.captured(1).isEmpty() ? match.captured(2) : match.captured(1), QFileInfo(file).absoluteDir()));
+        }
+        return {};
+    }
     if (lower.endsWith(".pls")) return load_pls(file, out);
     if (lower.endsWith(".xspf")) return load_xspf(file, out);
     if (lower.endsWith(".wpl")) return load_wpl(file, out);
@@ -546,12 +558,23 @@ std::string PlaylistModel::load_mpcasu_json(const QString& file, PlaylistModel* 
     if (!doc.is_object() || !doc.find("items") || !doc.find("items")->is_array())
         return ("unsupported playlist document: " + file).toStdString();
     const casu::JsonValue* version = doc.find("version");
-    if (!version || !version->is_int() || version->as_int() != 1)
+    const auto* type = doc.find("type");
+    const bool mobile = type && type->is_string() && type->as_string() == "mpcasu-playlist";
+    if (!mobile && (!version || !version->is_int() || version->as_int() != 1))
         return ("unsupported playlist document: " + file).toStdString();
     for (const casu::JsonValue& item : doc.find("items")->as_array().items) {
-        if (!item.is_string()) continue;
-        const QString target = resolve_entry(QString::fromStdString(item.as_string()), base);
-        if (!target.isEmpty()) out->add(target, QString());
+        const casu::JsonValue* value = &item;
+        QString title;
+        if (mobile && item.is_object()) {
+            value = item.find("sourceUrl");
+            if (!value || !value->is_string() || value->as_string().empty()) value = item.find("url");
+            if (!value) value = item.find("path");
+            const auto* label = item.find("title");
+            if (label && label->is_string()) title = QString::fromStdString(label->as_string());
+        }
+        if (!value || !value->is_string()) continue;
+        const QString target = resolve_entry(QString::fromStdString(value->as_string()), base);
+        if (!target.isEmpty()) out->add(target, title);
     }
     return {};
 }
@@ -652,7 +675,7 @@ std::string PlaylistModel::save_file(const QString& file, const PlaylistModel& m
 
 bool PlaylistModel::looks_like_playlist(const QString& path) {
     QString lower = path.toLower();
-    return lower.endsWith(".m3u") || lower.endsWith(".m3u8") || lower.endsWith(".pls") ||
+    return lower.endsWith(".cue") || lower.endsWith(".m3u") || lower.endsWith(".m3u8") || lower.endsWith(".pls") ||
            lower.endsWith(".xspf") || lower.endsWith(".wpl") || lower.endsWith(".jspf") ||
            lower.endsWith(".asx") || lower.endsWith(".wmx") || lower.endsWith(".wvx") ||
            lower.endsWith(".rmp") || lower.endsWith(".ram") || lower.endsWith(".json");

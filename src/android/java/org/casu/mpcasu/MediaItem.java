@@ -12,6 +12,8 @@ public final class MediaItem {
     public String title;        // display title
     public String kind;         // audio|video|stream|youtube|casu|mp5|playlist
     public String badge;        // short badge text (MP3/STREAM/YT/CASU/…)
+    public String album;
+    public boolean metadataLoaded;
     public String artist;       // optional metadata
     public String playlist;     // playlist group name when part of a loaded playlist
     public String subtitle;     // optional external subtitle path/uri
@@ -69,6 +71,8 @@ public final class MediaItem {
             o.putOpt("kind", kind);
             o.putOpt("badge", badge);
             o.putOpt("artist", artist);
+            o.putOpt("album", album);
+            o.put("metadataLoaded", metadataLoaded);
             o.putOpt("playlist", playlist);
             o.putOpt("subtitle", subtitle);
             o.putOpt("addedAt", addedAt);
@@ -87,6 +91,8 @@ public final class MediaItem {
         item.kind = o.optString("kind", "audio");
         item.badge = o.optString("badge", defaultBadge(url, item.kind));
         item.artist = o.optString("artist", null);
+        item.album = o.optString("album", null);
+        item.metadataLoaded = o.optBoolean("metadataLoaded", false);
         item.playlist = o.optString("playlist", null);
         item.subtitle = o.optString("subtitle", null);
         item.addedAt = o.optLong("addedAt", System.currentTimeMillis());

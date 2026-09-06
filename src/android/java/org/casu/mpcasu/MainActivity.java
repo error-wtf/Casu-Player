@@ -1154,15 +1154,9 @@ public class MainActivity extends Activity implements PlayerEngine.Listener {
             if (libMultiSelected.isEmpty()) return;
             List<Integer> sorted = new ArrayList<>(libMultiSelected);
             Collections.sort(sorted);
-            for (int idx : sorted) {
-                if (idx < libraryTracks.size()) {
-                    Library.Track track = libraryTracks.get(idx);
-                    MediaItem item = track.toItem();
-                    item.playlist = "LIBRARY";
-                    engine.openExternal(item, true, engine.items().size());
-                }
-            }
-            toast("▶ " + sorted.size() + " Tracks zur Queue hinzugefügt");
+            List<Library.Track> selected = new ArrayList<>();
+            for (int idx : sorted) if (idx >= 0 && idx < libraryTracks.size()) selected.add(libraryTracks.get(idx));
+            addLibrarySelectionToQueue(selected);
             libMultiSelected.clear();
             libMultiSelectMode = false;
             libraryAdapter.notifyDataSetChanged();
@@ -1246,6 +1240,33 @@ public class MainActivity extends Activity implements PlayerEngine.Listener {
         return page;
     }
 
+    private void addLibrarySelectionToQueue(List<Library.Track> selected) {
+        final String mode = libraryMode;
+        new Thread(() -> {
+            List<MediaItem> added = new ArrayList<>();
+            List<String> errors = new ArrayList<>();
+            for (Library.Track track : selected) {
+                try {
+                    if (PlaylistIO.isPlaylistPath(track.uri)) {
+                        PlaylistIO.Playlist playlist = PlaylistIO.load(track.uri, location -> PlaylistIO.fetchText(this, location));
+                        for (PlaylistIO.Entry entry : playlist.items) {
+                            MediaItem item = new MediaItem(entry.url, entry.title, guessKind(Uri.parse(entry.url)), null);
+                            item.playlist = track.title.replaceFirst("^≡ ", "");
+                            added.add(item);
+                        }
+                    } else if (track.uri.startsWith("library-group://")) {
+                        for (Library.Track child : Library.tracksInGroup(library.query("", true, false), mode, track.title)) added.add(child.toItem());
+                    } else added.add(track.toItem());
+                } catch (Exception error) { errors.add(track.title + ": " + error.getMessage()); }
+            }
+            ui.post(() -> {
+                engine.addAll(added);
+                refreshQueueUi();
+                toast(added.size() + " Einträge zur Queue hinzugefügt" + (errors.isEmpty() ? "" : " · " + String.join("; ", errors)));
+            });
+        }, "mpcasu-library-queue").start();
+    }
+
     private void refreshLibrary() {
         ui.post(() -> {
             if (library == null) return;
@@ -1295,7 +1316,7 @@ public class MainActivity extends Activity implements PlayerEngine.Listener {
 
     private void scanPlaylists() {
         playlistFiles.clear();
-        String[] exts = {".m3u", ".m3u8", ".pls", ".xspf"};
+        String[] exts = {".m3u", ".m3u8", ".pls", ".xspf", ".jspf", ".json", ".wpl", ".asx", ".wmx", ".wvx", ".rmp", ".ram", ".cue"};
         java.util.Set<String> found = new java.util.LinkedHashSet<>();
         java.io.File extDir = android.os.Environment.getExternalStorageDirectory();
         scanPlaylistsInDir(extDir, exts, found);
@@ -1306,7 +1327,11 @@ public class MainActivity extends Activity implements PlayerEngine.Listener {
         if (dlDir2 != null) scanPlaylistsInDir(dlDir2, exts, found);
         for (String path : found) {
             java.io.File f = new java.io.File(path);
-            playlistFiles.put(f.getName().replaceFirst("\\.[^.]+$", ""), path);
+            String base = f.getName().replaceFirst("\\.[^.]+$", "");
+            String label = base;
+            int counter = 2;
+            while (playlistFiles.containsKey(label)) label = base + " (" + counter++ + ")";
+            playlistFiles.put(label, path);
         }
         libraryTracks.clear();
         int idx = 0;
@@ -1370,6 +1395,12 @@ public class MainActivity extends Activity implements PlayerEngine.Listener {
                 row.addView(check, new LinearLayout.LayoutParams(
                         LinearLayout.LayoutParams.WRAP_CONTENT,
                         LinearLayout.LayoutParams.WRAP_CONTENT));
+                ImageView thumbnail = new ImageView(MainActivity.this);
+                thumbnail.setTag("lart");
+                thumbnail.setScaleType(ImageView.ScaleType.CENTER_CROP);
+                LinearLayout.LayoutParams artLayout = new LinearLayout.LayoutParams(dp(48), dp(48));
+                artLayout.rightMargin = dp(10);
+                row.addView(thumbnail, artLayout);
                 LinearLayout textCol = new LinearLayout(MainActivity.this);
                 textCol.setOrientation(LinearLayout.VERTICAL);
                 textCol.setLayoutParams(new LinearLayout.LayoutParams(0,
@@ -1398,9 +1429,23 @@ public class MainActivity extends Activity implements PlayerEngine.Listener {
             } else {
                 check.setVisibility(android.view.View.GONE);
             }
+            ImageView thumbnail = row.findViewWithTag("lart");
+            thumbnail.setImageResource(android.R.drawable.ic_media_play);
+            thumbnail.setContentDescription(track.album);
+            final LinearLayout boundRow = row;
+            boundRow.setTag(track.uri);
             title.setText((library.isFavorite(track.uri) ? "★ " : "") + track.title);
             String details = join(" · ", track.artist, track.album, track.genre);
             meta.setText(details.isEmpty() ? (track.video ? "VIDEO" : "AUDIO") : details);
+            MediaMetadata.load(MainActivity.this, track.uri, metadata -> {
+                if (isDestroyed() || !track.uri.equals(boundRow.getTag())) return;
+                if (metadata.artwork != null) thumbnail.setImageBitmap(metadata.artwork);
+                if (metadata.title != null && !metadata.title.isEmpty())
+                    title.setText((library.isFavorite(track.uri) ? "★ " : "") + metadata.title);
+                String tags = join(" · ", metadata.artist == null ? track.artist : metadata.artist,
+                        metadata.album == null ? track.album : metadata.album, track.genre);
+                if (!tags.isEmpty()) meta.setText(tags);
+            });
             row.setBackgroundColor(libMultiSelected.contains(position) && libMultiSelectMode
                     ? Color.parseColor("#2a1018") : Color.TRANSPARENT);
             return row;
@@ -1756,7 +1801,7 @@ public class MainActivity extends Activity implements PlayerEngine.Listener {
         vizBox.setOnCheckedChangeListener((button, checked) -> {
             settings.visualizer = checked;
             settings.save(this);
-            waveView.setVisibility(checked ? View.VISIBLE : View.GONE);
+            updateStageFor(engine.current());
             if (!checked) {
                 if (visualizer != null) {
                     try { visualizer.setEnabled(false); visualizer.release(); } catch (Exception ignored) {}
@@ -1914,7 +1959,7 @@ public class MainActivity extends Activity implements PlayerEngine.Listener {
                 recorder.stop();
             }
             titleView.setText(item != null && item.title != null ? item.title : "MPCASU");
-            artistView.setText(item != null && item.badge != null ? item.badge : "");
+            artistView.setText(item == null ? "" : join(" · ", item.artist, item.album, item.badge));
             updateStageFor(item);
             loadCover(item);
             loadSubtitleFor(item);
@@ -1978,8 +2023,15 @@ public class MainActivity extends Activity implements PlayerEngine.Listener {
         boolean video = item != null && (item.isVideo() || (videoActive && engine.videoWidth() > 0));
         videoView.setVisibility(video ? View.VISIBLE : View.GONE);
         waveView.setVisibility(!video && settings.visualizer ? View.VISIBLE : View.GONE);
-        coverView.setVisibility(!video && coverView.getVisibility() == View.VISIBLE
-                && !settings.visualizer ? View.VISIBLE : View.GONE);
+        boolean cover = !video && coverView.getDrawable() != null;
+        coverView.setVisibility(cover ? View.VISIBLE : View.GONE);
+        FrameLayout.LayoutParams coverLayout = (FrameLayout.LayoutParams) coverView.getLayoutParams();
+        coverLayout.bottomMargin = cover && settings.visualizer ? dp(48) : 0;
+        coverView.setLayoutParams(coverLayout);
+        FrameLayout.LayoutParams waveLayout = (FrameLayout.LayoutParams) waveView.getLayoutParams();
+        waveLayout.height = cover ? dp(48) : FrameLayout.LayoutParams.MATCH_PARENT;
+        waveLayout.gravity = Gravity.BOTTOM;
+        waveView.setLayoutParams(waveLayout);
     }
 
     private void attachVisualizer() {
@@ -1997,41 +2049,20 @@ public class MainActivity extends Activity implements PlayerEngine.Listener {
     }
 
     private void loadCover(MediaItem item) {
-        if (item == null || item.isVideo()) {
-            coverView.setVisibility(View.GONE);
-            return;
-        }
-        new Thread(() -> {
-            Bitmap bitmap = null;
-            try {
-                MediaMetadataRetriever retriever = new MediaMetadataRetriever();
-                try {
-                    if (item.url.startsWith("content://")) {
-                        retriever.setDataSource(this, Uri.parse(item.url));
-                    } else if (item.url.startsWith("/")) {
-                        retriever.setDataSource(item.url);
-                    } else {
-                        retriever.setDataSource(item.url, new java.util.HashMap<>());
-                    }
-                    byte[] art = retriever.getEmbeddedPicture();
-                    if (art != null) {
-                        bitmap = android.graphics.BitmapFactory.decodeByteArray(art, 0, art.length);
-                    }
-                } finally {
-                    retriever.release();
-                }
-            } catch (Exception ignored) {
-            }
-            Bitmap finalBitmap = bitmap;
-            ui.post(() -> {
-                if (finalBitmap != null) {
-                    coverView.setImageBitmap(finalBitmap);
-                    if (!settings.visualizer) coverView.setVisibility(View.VISIBLE);
-                } else {
-                    coverView.setVisibility(View.GONE);
-                }
-            });
-        }).start();
+        coverView.setImageDrawable(null);
+        coverView.setVisibility(View.GONE);
+        if (item == null || item.isVideo()) return;
+        final String source = item.url;
+        MediaMetadata.load(this, source, metadata -> {
+            if (isDestroyed() || engine.current() != item || !source.equals(item.url)) return;
+            metadata.apply(item);
+            titleView.setText(item.title);
+            artistView.setText(join(" · ", item.artist, item.album, item.badge));
+            coverView.setImageBitmap(metadata.artwork);
+            updateStageFor(item);
+            engine.persist();
+            refreshQueueUi();
+        });
     }
 
     private void loadSubtitleFor(MediaItem item) {
@@ -2731,6 +2762,7 @@ public class MainActivity extends Activity implements PlayerEngine.Listener {
         if (value.endsWith(".mp5")) return "mp5";
         if (value.contains(".m3u") || value.contains(".pls")
                 || value.contains(".xspf") || value.contains(".jspf")
+                || value.contains(".json") || value.contains(".cue")
                 || value.contains(".asx") || value.contains(".wpl")
                 || value.contains("application/vnd.apple.mpegurl")
                 || value.contains("application/x-mpegurl")
@@ -2750,7 +2782,7 @@ public class MainActivity extends Activity implements PlayerEngine.Listener {
                 List<MediaItem> items = new ArrayList<>();
                 for (PlaylistIO.Entry entry : playlist.items) {
                     if (entry.url == null || entry.url.isEmpty()) continue;
-                    MediaItem item = new MediaItem(entry.url, entry.title, "stream", null);
+                    MediaItem item = new MediaItem(entry.url, entry.title, guessKind(Uri.parse(entry.url)), null);
                     item.playlist = playlist.name;
                     items.add(item);
                 }
