@@ -292,6 +292,9 @@ public final class ProviderActivity extends Activity {
         WebView view = new WebView(this);
         WebSettings settings = view.getSettings();
         settings.setJavaScriptEnabled(true);
+        // Preserve the actual Android and Chromium versions. Drop only the
+        // legacy WebView application markers, which trigger embed-only sites.
+        settings.setUserAgentString(compatibleUserAgent(settings.getUserAgentString()));
         settings.setDomStorageEnabled(true);
         settings.setDatabaseEnabled(true);
         settings.setMediaPlaybackRequiresUserGesture(false);
@@ -494,6 +497,10 @@ public final class ProviderActivity extends Activity {
 
     private void toast(String text) {
         Toast.makeText(this, text, Toast.LENGTH_SHORT).show();
+    }
+
+    static String compatibleUserAgent(String value) {
+        return value.replace("; wv", "").replace("Version/4.0 ", "");
     }
 
     private int dp(int value) {

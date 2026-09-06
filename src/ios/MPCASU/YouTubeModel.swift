@@ -40,11 +40,11 @@ final class YouTubeModel: ObservableObject {
                 if result.kind == .playlist {
                     let videos = try await YouTubeClient.playlist(result.id)
                     for video in videos {
-                        let url = try await YouTubeClient.resolve(video.id)
-                        player.append(title: video.title, url: url)
+                        let url = URL(string: "https://www.youtube.com/watch?v=" + video.id)!
+                        player.append(title: video.title, url: url, playlistID: result.id, playlistTitle: result.title)
                     }
                 } else {
-                    let url = try await YouTubeClient.resolve(result.id)
+                    let url = URL(string: "https://www.youtube.com/watch?v=" + result.id)!
                     player.append(title: result.title, url: url, play: true)
                 }
             } catch { self.error = error.localizedDescription }
@@ -54,17 +54,20 @@ final class YouTubeModel: ObservableObject {
 }
 
 enum YouTubeClient {
+    static func videoID(_ url: URL) -> String? {
+        let host = url.host?.lowercased() ?? ""
+        let candidate: String?
+        if host == "youtu.be" { candidate = url.pathComponents.dropFirst().first }
+        else if host == "youtube.com" || host.hasSuffix(".youtube.com") {
+            if url.path.hasPrefix("/shorts/") || url.path.hasPrefix("/embed/") { candidate = url.lastPathComponent }
+            else { candidate = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.first(where: { $0.name == "v" })?.value }
+        } else { return nil }
+        guard let id = candidate, id.range(of: "^[A-Za-z0-9_-]{11}$", options: .regularExpression) != nil else { return nil }
+        return id
+    }
+
     private static let endpoint = URL(string: "https://www.youtube.com/youtubei/v1/")!
     private static let context: [String: Any] = ["client": ["clientName": "ANDROID_VR", "clientVersion": "1.60.19", "androidSdkVersion": 32]]
-
-    private static var apiKey: String? {
-        guard let configured = Bundle.main.object(forInfoDictionaryKey: "MPCASUYouTubeAPIKey") as? String else {
-            return nil
-        }
-        let value = configured.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !value.isEmpty, !value.contains("$(") else { return nil }
-        return value
-    }
 
     static func search(_ query: String, kind: YouTubeSearchKind) async throws -> [YouTubeResult] {
         let filter = kind == .playlists ? "EgIQAw%3D%3D" : "EgIQAQ%3D%3D"
@@ -119,9 +122,8 @@ enum YouTubeClient {
     }
 
     private static func request(_ method: String, body: [String: Any]) async throws -> [String: Any] {
-        guard let apiKey else { throw YouTubeError.missingConfiguration }
         var components = URLComponents(url: endpoint.appendingPathComponent(method), resolvingAgainstBaseURL: false)!
-        components.queryItems = [URLQueryItem(name: "key", value: apiKey)]
+        components.queryItems = [URLQueryItem(name: "prettyPrint", value: "false")]
         var request = URLRequest(url: components.url!)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -151,16 +153,6 @@ enum YouTubeClient {
 }
 
 enum YouTubeError: LocalizedError {
-    case missingConfiguration, network, unplayable
-
-    var errorDescription: String? {
-        switch self {
-        case .missingConfiguration:
-            return "YouTube is not configured for this build."
-        case .network:
-            return "YouTube request failed."
-        case .unplayable:
-            return "YouTube item has no directly playable format."
-        }
-    }
+    case network, unplayable
+    var errorDescription: String? { self == .network ? "YouTube request failed." : "YouTube item has no directly playable format." }
 }

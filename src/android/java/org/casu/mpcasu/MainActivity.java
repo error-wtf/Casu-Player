@@ -796,19 +796,7 @@ public class MainActivity extends Activity implements PlayerEngine.Listener {
         queueList.setBackgroundColor(SURFACE);
         queueAdapter = new QueueAdapter();
         queueList.setAdapter(queueAdapter);
-        queueList.setOnItemClickListener((parent, view, position, id) -> {
-            List<Integer> visible = visibleQueueIndexes();
-            if (position < visible.size()) {
-                if (multiSelectMode) {
-                    int srcIdx = visible.get(position);
-                    if (multiSelected.contains(srcIdx)) multiSelected.remove(srcIdx);
-                    else multiSelected.add(srcIdx);
-                    refreshQueueUi();
-                } else {
-                    engine.playIndex(visible.get(position));
-                }
-            }
-        });
+        queueList.setOnItemClickListener((parent, view, position, id) -> toggleQueueRow(position));
         queueList.setOnItemLongClickListener((parent, view, position, id) -> {
             if (!multiSelectMode) {
                 multiSelectMode = true;
@@ -848,10 +836,28 @@ public class MainActivity extends Activity implements PlayerEngine.Listener {
         List<Integer> visible = visibleQueueIndexes();
         int mapped = position >= 0 && position < visible.size() ? visible.get(position) : -1;
         if (mapped < 0) return;
-        int target = mapped + delta;
-        if (target < 0 || target >= engine.items().size()) return;
-        engine.move(mapped, target);
-        queueAdapter.selected = queueAdapter.selected + delta;
+        QueueGroups.Row row = queueRows().get(position);
+        if (row.header) {
+            int count = row.end - row.index;
+            if (delta < 0) {
+                if (row.index == 0) return;
+                int target = row.index - 1;
+                String group = engine.items().get(target).playlist;
+                while (target > 0 && group != null && !group.isEmpty() && group.equals(engine.items().get(target - 1).playlist)) target--;
+                for (int i = 0; i < count; i++) engine.move(row.index + i, target + i);
+            } else {
+                if (row.end >= engine.items().size()) return;
+                int target = row.end;
+                String group = engine.items().get(target).playlist;
+                while (target + 1 < engine.items().size() && group != null && !group.isEmpty() && group.equals(engine.items().get(target + 1).playlist)) target++;
+                for (int i = count - 1; i >= 0; i--) engine.move(row.index + i, target - (count - 1 - i));
+            }
+        } else {
+            int target = mapped + delta;
+            if (target < 0 || target >= engine.items().size()) return;
+            engine.move(mapped, target);
+        }
+        queueAdapter.selected = -1;
         refreshQueueUi();
     }
 
@@ -863,13 +869,19 @@ public class MainActivity extends Activity implements PlayerEngine.Listener {
         }
         MediaItem item = engine.items().get(mapped);
         EditText input = new EditText(this);
-        input.setText(item.title);
+        QueueGroups.Row selectedRow = queueRows().get(queueAdapter.selected);
+        input.setText(selectedRow.header ? item.playlist : item.title);
         input.setTextColor(TEXT);
         new AlertDialog.Builder(this)
                 .setTitle("Umbenennen")
                 .setView(input)
                 .setPositiveButton("OK", (dialog, which) -> {
-                    engine.rename(mapped, input.getText().toString());
+                    if (selectedRow.header) {
+                        String label = input.getText().toString().trim();
+                        if (label.isEmpty()) return;
+                        for (int i = selectedRow.index; i < selectedRow.end; i++) engine.items().get(i).playlist = label;
+                        engine.rename(mapped, item.title);
+                    } else engine.rename(mapped, input.getText().toString());
                     refreshQueueUi();
                 })
                 .setNegativeButton("Abbrechen", null)
@@ -882,17 +894,36 @@ public class MainActivity extends Activity implements PlayerEngine.Listener {
         return position >= 0 && position < visible.size() ? visible.get(position) : -1;
     }
 
+    private final java.util.Set<String> expandedQueueGroups = new java.util.HashSet<>();
+
+    private List<QueueGroups.Row> queueRows() {
+        String query = queueSearch != null ? queueSearch.getText().toString().trim() : "";
+        return QueueGroups.rows(engine.items(), expandedQueueGroups, query);
+    }
+
     private List<Integer> visibleQueueIndexes() {
         List<Integer> out = new ArrayList<>();
-        if (engine == null) return out;
-        String query = queueSearch != null ? queueSearch.getText().toString().trim().toLowerCase(Locale.ROOT) : "";
-        List<MediaItem> items = engine.items();
-        for (int i = 0; i < items.size(); i++) {
-            MediaItem item = items.get(i);
-            String hay = (item.title + " " + item.url + " " + item.badge).toLowerCase(Locale.ROOT);
-            if (query.isEmpty() || hay.contains(query)) out.add(i);
-        }
+        if (engine != null) for (QueueGroups.Row row : queueRows()) out.add(row.index);
         return out;
+    }
+
+    private void toggleQueueRow(int position) {
+        List<QueueGroups.Row> rows = queueRows();
+        if (position < 0 || position >= rows.size()) return;
+        QueueGroups.Row row = rows.get(position);
+        queueAdapter.selected = position;
+        if (multiSelectMode) {
+            boolean remove = multiSelected.contains(row.index);
+            for (int i = row.index; i < row.end; i++) {
+                if (remove) multiSelected.remove(i); else multiSelected.add(i);
+            }
+        } else if (row.header) {
+            String group = engine.items().get(row.index).playlist;
+            if (!expandedQueueGroups.remove(group)) expandedQueueGroups.add(group);
+        } else {
+            engine.playIndex(row.index);
+        }
+        refreshQueueUi();
     }
 
     private void refreshQueueUi() {
@@ -951,9 +982,18 @@ public class MainActivity extends Activity implements PlayerEngine.Listener {
             TextView title = row.findViewWithTag("qtitle");
             TextView badge = row.findViewWithTag("qbadge");
             TextView check = row.findViewWithTag("qcheck");
-            title.setText(item.title + (item.artist != null && !item.artist.isEmpty()
-                    ? "\n" + item.artist : ""));
-            badge.setText(item.badge);
+            QueueGroups.Row groupRow = queueRows().get(position);
+            title.setText(groupRow.header ? item.playlist + " · " + (groupRow.end - groupRow.index) + " Videos"
+                    : item.title + (item.artist != null && !item.artist.isEmpty() ? "\n" + item.artist : ""));
+            badge.setText(groupRow.header ? (expandedQueueGroups.contains(item.playlist) ? "▼" : "▶") : item.badge);
+            row.setPadding(dp(groupRow.header || item.playlist == null ? 12 : 28), dp(10), dp(12), dp(10));
+            Button removeButton = row.findViewWithTag("qremove");
+            removeButton.setOnClickListener(v -> {
+                List<Integer> indexes = new ArrayList<>();
+                for (int i = groupRow.index; i < groupRow.end; i++) indexes.add(i);
+                engine.removeAll(indexes);
+                refreshQueueUi();
+            });
             boolean active = sourceIndex == engine.index();
             boolean selected = multiSelected.contains(sourceIndex);
             if (multiSelectMode) {
@@ -1006,22 +1046,9 @@ public class MainActivity extends Activity implements PlayerEngine.Listener {
                 Object tag = v.getTag();
                 if (tag != null) engine.removeAt((int) tag);
             });
-            remove.setTag(-1);
+            remove.setTag("qremove");
             row.addView(remove, new LinearLayout.LayoutParams(dp(40), dp(40)));
-            row.setOnClickListener(v -> {
-                int position = queueList.getPositionForView(v);
-                if (multiSelectMode) {
-                    if (position >= 0 && position < sourceIndexes.size()) {
-                        int srcIdx = sourceIndexes.get(position);
-                        if (multiSelected.contains(srcIdx)) multiSelected.remove(srcIdx);
-                        else multiSelected.add(srcIdx);
-                        refreshQueueUi();
-                    }
-                } else {
-                    selected = position;
-                    refreshQueueUi();
-                }
-            });
+            row.setOnClickListener(v -> toggleQueueRow(queueList.getPositionForView(v)));
             row.setOnLongClickListener(v -> {
                 int position = queueList.getPositionForView(v);
                 if (!multiSelectMode) multiSelectMode = true;
@@ -1677,14 +1704,6 @@ public class MainActivity extends Activity implements PlayerEngine.Listener {
     }
 
     private void openProvider(String name, String url) {
-        if ("SPOTIFY".equals(name) || "NETFLIX".equals(name)) {
-            try {
-                startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(url)));
-            } catch (Exception e) {
-                toast(name + ": kein unterstützter Browser gefunden");
-            }
-            return;
-        }
         Intent intent = new Intent(this, ProviderActivity.class);
         intent.putExtra("name", name);
         intent.putExtra("url", url);
@@ -2419,10 +2438,13 @@ public class MainActivity extends Activity implements PlayerEngine.Listener {
                         for (YouTubeClient.Video v : videos) {
                             if (n >= 100) break;
                             try {
-                                String mediaUrl = YouTubeClient.resolveMediaUrl(v.id);
-                                toAdd.add(new MediaItem(mediaUrl,
+                                String mediaUrl = "https://www.youtube.com/watch?v=" + v.id;
+                                MediaItem item = new MediaItem(mediaUrl,
                                         v.title != null && !v.title.isEmpty() ? v.title : "YouTube " + v.id,
-                                        "youtube", "YT"));
+                                        "youtube", "YT");
+                                item.playlist = "YouTube " + playlistId;
+                                item.sourceUrl = "https://www.youtube.com/watch?v=" + v.id;
+                                toAdd.add(item);
                             } catch (Exception ignored) {
                             }
                             n++;
@@ -2430,8 +2452,10 @@ public class MainActivity extends Activity implements PlayerEngine.Listener {
                     } else {
                         String id = YouTubeClient.extractVideoId(token);
                         if (id == null) continue;
-                        String mediaUrl = YouTubeClient.resolveMediaUrl(id);
-                        toAdd.add(new MediaItem(mediaUrl, "YouTube " + id, "youtube", "YT"));
+                        String mediaUrl = "https://www.youtube.com/watch?v=" + id;
+                        MediaItem item = new MediaItem(mediaUrl, "YouTube " + id, "youtube", "YT");
+                        item.sourceUrl = "https://www.youtube.com/watch?v=" + id;
+                        toAdd.add(item);
                     }
                 }
             } catch (Exception e) {
@@ -2463,7 +2487,7 @@ public class MainActivity extends Activity implements PlayerEngine.Listener {
         EditText name = new EditText(this);
         name.setHint("Playlist-Name");
         name.setTextColor(TEXT);
-        String[] formats = {"m3u", "pls", "xspf", "jspf", "json"};
+        String[] formats = {"m3u", "m3u8", "pls", "xspf", "jspf", "json"};
         new AlertDialog.Builder(this)
                 .setTitle("Queue speichern als")
                 .setView(name)
@@ -2472,13 +2496,14 @@ public class MainActivity extends Activity implements PlayerEngine.Listener {
                     if (base.isEmpty()) base = "playlist";
                     File dir = new File(getExternalFilesDir(Environment.DIRECTORY_MUSIC), "MPCASU");
                     if (!dir.exists()) dir.mkdirs();
+                    base = new File(base).getName().replaceAll("(?i)\\.(m3u8?|pls|xspf|jspf|json)$", "");
                     File target = new File(dir, base + "." + formats[which]);
                     try {
                         String text;
-                        if (which == 0) text = PlaylistIO.writeM3u(base, engine.items());
-                        else if (which == 1) text = PlaylistIO.writePls(engine.items());
-                        else if (which == 2) text = PlaylistIO.writeXspf(base, engine.items());
-                        else if (which == 3) text = PlaylistIO.writeJspf(base, engine.items());
+                        if (formats[which].startsWith("m3u")) text = PlaylistIO.writeM3u(base, engine.items());
+                        else if ("pls".equals(formats[which])) text = PlaylistIO.writePls(engine.items());
+                        else if ("xspf".equals(formats[which])) text = PlaylistIO.writeXspf(base, engine.items());
+                        else if ("jspf".equals(formats[which])) text = PlaylistIO.writeJspf(base, engine.items());
                         else text = PlaylistIO.writeCasuJson(base, engine.items());
                         PlaylistIO.writeText(target.getAbsolutePath(), text);
                         toast("Gespeichert · " + target.getName());

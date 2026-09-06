@@ -8,6 +8,7 @@ import org.json.JSONObject;
  *  or resolved YouTube media URLs; kind drives badge + stage decisions. */
 public final class MediaItem {
     public String url;          // playable source (path/URI)
+    public String sourceUrl;    // canonical provider URL for portable playlist exports
     public String title;        // display title
     public String kind;         // audio|video|stream|youtube|casu|mp5|playlist
     public String badge;        // short badge text (MP3/STREAM/YT/CASU/…)
@@ -48,6 +49,8 @@ public final class MediaItem {
         return ext.toUpperCase();
     }
 
+    public String exportUrl() { return sourceUrl == null || sourceUrl.isEmpty() ? url : sourceUrl; }
+
     public boolean isVideo() {
         return "video".equals(kind);
     }
@@ -61,6 +64,7 @@ public final class MediaItem {
         JSONObject o = new JSONObject();
         try {
             o.putOpt("url", url);
+            o.putOpt("sourceUrl", sourceUrl);
             o.putOpt("title", title);
             o.putOpt("kind", kind);
             o.putOpt("badge", badge);
@@ -78,6 +82,7 @@ public final class MediaItem {
         if (url == null || url.isEmpty()) return null;
         MediaItem item = new MediaItem();
         item.url = url;
+        item.sourceUrl = o.optString("sourceUrl", null);
         item.title = o.optString("title", fallbackTitle(url));
         item.kind = o.optString("kind", "audio");
         item.badge = o.optString("badge", defaultBadge(url, item.kind));

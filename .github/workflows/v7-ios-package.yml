@@ -1,0 +1,36 @@
+name: V7 iOS package
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  package:
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - run: brew list xcodegen >/dev/null 2>&1 || brew install xcodegen
+      - name: Package device and simulator
+        working-directory: src/ios
+        run: |
+          set -euo pipefail
+          xcodegen generate
+          mkdir -p ../../dist/ios
+          xcodebuild archive -project MPCASU.xcodeproj -scheme MPCASU -configuration Release -sdk iphoneos -destination 'generic/platform=iOS' -archivePath ../../dist/ios/MPCASU-iOS-7.0.0.xcarchive CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO
+          xcodebuild build -project MPCASU.xcodeproj -scheme MPCASU -configuration Debug -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' -derivedDataPath ../../.v7-ios-simulator CODE_SIGNING_ALLOWED=NO
+          app='../../dist/ios/MPCASU-iOS-7.0.0.xcarchive/Products/Applications/MPCASU.app'
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app/Info.plist")" = 7.0.0
+          ditto -c -k --keepParent "$app" ../../dist/ios/MPCASU-iOS-Device-Unsigned-7.0.0.zip
+          ditto -c -k --keepParent ../../dist/ios/MPCASU-iOS-7.0.0.xcarchive ../../dist/ios/MPCASU-iOS-Archive-7.0.0.zip
+          ditto -c -k --keepParent ../../.v7-ios-simulator/Build/Products/Debug-iphonesimulator/MPCASU.app ../../dist/ios/MPCASU-iOS-Simulator-7.0.0.zip
+          mkdir -p ../../dist/ios/Payload
+          ditto "$app" ../../dist/ios/Payload/MPCASU.app
+          cd ../../dist/ios
+          ditto -c -k --keepParent Payload MPCASU-iOS-7.0.0.ipa
+      - uses: actions/upload-artifact@v4
+        with:
+          name: v7-ios-package
+          path: |
+            dist/ios/*.zip
+            dist/ios/*.ipa
+          if-no-files-found: error

@@ -26,7 +26,8 @@ jobs:
           python3 -m venv "$RUNNER_TEMP/venv"
           source "$RUNNER_TEMP/venv/bin/activate"
           python -m pip install --disable-pip-version-check \
-            'PySide6==6.10.2' python-vlc pyinstaller numpy zstd yt-dlp
+            'PySide6==6.10.2' python-vlc pyinstaller numpy zstd yt-dlp pytest
+          QT_QPA_PLATFORM=offscreen PYTHONPATH=src/desktop python -m pytest -q tests/test_inapp_browser.py tests/test_youtube_playlist_groups.py
           python -m PyInstaller --noconfirm --clean --windowed \
             --name 'MPCASU Player' --paths src/desktop \
             --add-data 'src/windows/assets:assets' src/desktop/mpcasu_qt/app.py
@@ -62,12 +63,88 @@ jobs:
           hdiutil create -quiet -volname 'MPCASU Player 7.0.0' \
             -srcfolder "$stage" -ov -format UDZO \
             dist/MPCASU-Player-macOS-7.0.0.dmg
-      - name: Publish corrected DMG
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: gh release upload v7.0.0 dist/MPCASU-Player-macOS-7.0.0.dmg --clobber
       - uses: actions/upload-artifact@v4
         with:
           name: mpcasu-player-macos
           path: dist/MPCASU-Player-macOS-7.0.0.dmg
+          if-no-files-found: error
+
+  ios:
+    runs-on: macos-15
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - run: brew list xcodegen >/dev/null 2>&1 || brew install xcodegen
+      - name: Generate native iOS project
+        working-directory: src/ios
+        run: xcodegen generate
+      - name: Build and archive real iOS device target
+        working-directory: src/ios
+        run: |
+          set -euo pipefail
+          mkdir -p ../../dist/apple
+          xcodebuild build \
+            -project MPCASU.xcodeproj \
+            -scheme MPCASU \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath ../../.v7-derived-data/device \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO
+          xcodebuild archive \
+            -project MPCASU.xcodeproj \
+            -scheme MPCASU \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -archivePath ../../dist/apple/MPCASU-iOS-7.0.0.xcarchive \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO
+          app='../../dist/apple/MPCASU-iOS-7.0.0.xcarchive/Products/Applications/MPCASU.app'
+          test -d "$app"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app/Info.plist")" = 7.0.0
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$app/Info.plist")" = org.casu.mpcasu
+          file "$app/MPCASU" | grep -q arm64
+          ditto -c -k --keepParent "$app" ../../dist/apple/MPCASU-iOS-Device-Unsigned-7.0.0.zip
+          ditto -c -k --keepParent ../../dist/apple/MPCASU-iOS-7.0.0.xcarchive ../../dist/apple/MPCASU-iOS-Archive-7.0.0.zip
+          shasum -a 256 ../../dist/apple/MPCASU-iOS-Device-Unsigned-7.0.0.zip > ../../dist/apple/MPCASU-iOS-Device-Unsigned-7.0.0.zip.sha256
+          shasum -a 256 ../../dist/apple/MPCASU-iOS-Archive-7.0.0.zip > ../../dist/apple/MPCASU-iOS-Archive-7.0.0.zip.sha256
+      - name: Select representative simulators
+        id: sims
+        run: |
+          set -euo pipefail
+          runtime="$(xcrun simctl list runtimes -j | jq -r '[.runtimes[] | select(.isAvailable and (.identifier | contains(".iOS-")))] | sort_by(.version | split(".") | map(tonumber)) | last.identifier')"
+          test -n "$runtime"; test "$runtime" != null
+          devices="$(xcrun simctl list devices available -j)"
+          phone_template="$(jq -r --arg runtime "$runtime" '[.devices[$runtime][] | select(.isAvailable and (.name | startswith("iPhone")))] | last.udid' <<<"$devices")"
+          tablet_template="$(jq -r --arg runtime "$runtime" '[.devices[$runtime][] | select(.isAvailable and (.name | startswith("iPad")))] | last.udid' <<<"$devices")"
+          test -n "$phone_template"; test "$phone_template" != null
+          test -n "$tablet_template"; test "$tablet_template" != null
+          phone="$(xcrun simctl clone "$phone_template" MPCASU-V7-iPhone)"
+          tablet="$(xcrun simctl clone "$tablet_template" MPCASU-V7-iPad)"
+          echo "phone=$phone" >> "$GITHUB_OUTPUT"
+          echo "tablet=$tablet" >> "$GITHUB_OUTPUT"
+      - name: Build and test iPhone simulator
+        working-directory: src/ios
+        run: |
+          xcrun simctl boot '${{ steps.sims.outputs.phone }}'
+          xcrun simctl bootstatus '${{ steps.sims.outputs.phone }}' -b
+          xcodebuild test -project MPCASU.xcodeproj -scheme MPCASU -configuration Debug -sdk iphonesimulator -destination 'platform=iOS Simulator,id=${{ steps.sims.outputs.phone }}' -derivedDataPath ../../.v7-derived-data/iphone -resultBundlePath ../../dist/src/ios-iphone.xcresult CODE_SIGNING_ALLOWED=NO
+          xcrun simctl shutdown '${{ steps.sims.outputs.phone }}'
+      - name: Build and test iPad simulator
+        working-directory: src/ios
+        run: |
+          xcrun simctl boot '${{ steps.sims.outputs.tablet }}'
+          xcrun simctl bootstatus '${{ steps.sims.outputs.tablet }}' -b
+          xcodebuild test -project MPCASU.xcodeproj -scheme MPCASU -configuration Debug -sdk iphonesimulator -destination 'platform=iOS Simulator,id=${{ steps.sims.outputs.tablet }}' -derivedDataPath ../../.v7-derived-data/ipad -resultBundlePath ../../dist/src/ios-ipad.xcresult CODE_SIGNING_ALLOWED=NO
+          xcrun simctl shutdown '${{ steps.sims.outputs.tablet }}'
+      - name: Package simulator application
+        run: |
+          mkdir -p dist/apple
+          ditto -c -k --keepParent .v7-derived-data/iphone/Build/Products/Debug-iphonesimulator/MPCASU.app dist/apple/MPCASU-iOS-Simulator-7.0.0.zip
+          shasum -a 256 dist/apple/MPCASU-iOS-Simulator-7.0.0.zip > dist/apple/MPCASU-iOS-Simulator-7.0.0.zip.sha256
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mpcasu-player-ios
+          path: dist/apple/
           if-no-files-found: error

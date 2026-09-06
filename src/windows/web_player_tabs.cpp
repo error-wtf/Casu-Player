@@ -91,6 +91,31 @@ private:
     std::atomic<ULONG> ref_;
 };
 
+class NewWindowHandler : public ICoreWebView2NewWindowRequestedEventHandler {
+public:
+    HRESULT STDMETHODCALLTYPE QueryInterface(REFIID id, void** out) override {
+        if (!out) return E_POINTER;
+        if (id == IID_IUnknown || id == IID_ICoreWebView2NewWindowRequestedEventHandler) {
+            *out = static_cast<ICoreWebView2NewWindowRequestedEventHandler*>(this);
+            AddRef(); return S_OK;
+        }
+        *out = nullptr; return E_NOINTERFACE;
+    }
+    ULONG STDMETHODCALLTYPE AddRef() override { return ++refs_; }
+    ULONG STDMETHODCALLTYPE Release() override { ULONG r = --refs_; if (!r) delete this; return r; }
+    HRESULT STDMETHODCALLTYPE Invoke(ICoreWebView2* sender, ICoreWebView2NewWindowRequestedEventArgs* args) override {
+        LPWSTR uri = nullptr;
+        args->put_Handled(TRUE);
+        if (SUCCEEDED(args->get_Uri(&uri)) && uri) {
+            sender->Navigate(uri);
+            CoTaskMemFree(uri);
+        }
+        return S_OK;
+    }
+private:
+    std::atomic<ULONG> refs_{1};
+};
+
 class ControllerCreatedHandler
     : public ICoreWebView2CreateCoreWebView2ControllerCompletedHandler {
 public:
@@ -234,8 +259,8 @@ private:
         p_layout->addWidget(fallback_title_);
 
         fallback_desc_ = new QLabel(
-            QStringLiteral("Der integrierte Player nutzt die Microsoft Edge WebView2 Runtime mit voller Widevine-DRM-Unterstützung.\n"
-                           "Falls WebView2 auf diesem System nicht aktiv ist, kann die Seite direkt im Standardbrowser geöffnet werden."),
+            QStringLiteral("Der integrierte Player benötigt die Microsoft Edge WebView2 Runtime.\n"
+                           "Die DRM-Freigabe erfolgt durch den Anbieter. Bei fehlender Runtime bitte den MPCASU-Installer erneut ausführen."),
             fallback_panel_);
         fallback_desc_->setObjectName(QStringLiteral("FallbackText"));
         fallback_desc_->setWordWrap(true);
@@ -248,22 +273,19 @@ private:
 
         auto* btn_layout = new QHBoxLayout();
         btn_layout->setSpacing(10);
-        fallback_open_btn_ = new QPushButton(QStringLiteral("Im Standardbrowser öffnen"), fallback_panel_);
+        fallback_open_btn_ = new QPushButton(QStringLiteral("Erneut versuchen"), fallback_panel_);
         fallback_open_btn_->setObjectName(QStringLiteral("FallbackPrimary"));
         connect(fallback_open_btn_, &QPushButton::clicked, this, [this]() {
             if (!current_url_.isEmpty()) {
-                QDesktopServices::openUrl(QUrl(current_url_));
+#if defined(CASU_HAVE_WEBVIEW2)
+                if (init_failed_) { cleanup(); init_failed_ = false; init_started_ = false; }
+#endif
+                load_url(current_url_);
             }
         });
         btn_layout->addWidget(fallback_open_btn_);
 
-        fallback_dl_btn_ = new QPushButton(QStringLiteral("WebView2 Runtime herunterladen"), fallback_panel_);
-        fallback_dl_btn_->setObjectName(QStringLiteral("FallbackBtn"));
-        connect(fallback_dl_btn_, &QPushButton::clicked, this, []() {
-            QDesktopServices::openUrl(
-                QUrl(QStringLiteral("https://go.microsoft.com/fwlink/p/?LinkId=2124703")));
-        });
-        btn_layout->addWidget(fallback_dl_btn_);
+        fallback_dl_btn_ = nullptr;
         btn_layout->addStretch(1);
         p_layout->addLayout(btn_layout);
         p_layout->addStretch(1);
@@ -342,6 +364,12 @@ private:
                                 controller_ = ctrl;
                                 controller_->AddRef();
                                 controller_->get_CoreWebView2(&webview_);
+                                if (webview_) {
+                                    auto* handler = new NewWindowHandler();
+                                    EventRegistrationToken token{};
+                                    webview_->add_NewWindowRequested(handler, &token);
+                                    handler->Release();
+                                }
                                 controller_->put_IsVisible(TRUE);
                                 RECT r{0, 0, static_cast<LONG>(width()), static_cast<LONG>(height())};
                                 controller_->put_Bounds(r);
@@ -509,9 +537,6 @@ void WebPlayerTabs::submit(const QString& key) {
     QString text = entry->text().trimmed();
     if (text.isEmpty()) return;
     const bool is_url = text.contains(QLatin1String("://")) && text.contains(QLatin1Char('.'));
-    if (key == QLatin1String("spotify") && is_url) {
-        text = QString::fromStdString(casu::web::spotify_embed_url(text.toStdString()));
-    }
     open(key, is_url ? QString() : text, is_url ? text : QString());
 }
 

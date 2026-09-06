@@ -17,9 +17,12 @@ struct QueueOccurrence: Codable, Identifiable, Equatable {
     let media: MediaIdentity
     let title: String
     let url: URL
+    let playlistID: String?
+    let playlistTitle: String?
 
-    init(id: UUID = UUID(), media: MediaIdentity, title: String, url: URL) {
+    init(id: UUID = UUID(), media: MediaIdentity, title: String, url: URL, playlistID: String? = nil, playlistTitle: String? = nil) {
         self.id = id; self.media = media; self.title = title; self.url = url
+        self.playlistID = playlistID; self.playlistTitle = playlistTitle
     }
 }
 
@@ -54,5 +57,46 @@ enum QueuePersistence {
 
     static func decode(_ data: Data) throws -> QueueSnapshot {
         try JSONDecoder().decode(QueueSnapshot.self, from: data).validated()
+    }
+}
+
+
+struct QueueDisplayGroup: Identifiable {
+    let id: UUID
+    let title: String?
+    var items: [QueueOccurrence]
+
+    static func make(_ occurrences: [QueueOccurrence]) -> [QueueDisplayGroup] {
+        var groups: [QueueDisplayGroup] = []
+        for item in occurrences {
+            if let playlistID = item.playlistID,
+               let last = groups.last, last.items.last?.playlistID == playlistID {
+                groups[groups.count - 1].items.append(item)
+            } else {
+                groups.append(QueueDisplayGroup(id: item.id,
+                    title: item.playlistID == nil ? nil : item.playlistTitle ?? "YouTube playlist",
+                    items: [item]))
+            }
+        }
+        return groups
+    }
+}
+
+enum PlaylistExportFormat: String, CaseIterable, Identifiable {
+    case m3u, m3u8, pls
+    var id: String { rawValue }
+
+    func render(_ items: [QueueOccurrence]) -> String {
+        func title(_ item: QueueOccurrence) -> String {
+            item.title.replacingOccurrences(of: "\r", with: " ").replacingOccurrences(of: "\n", with: " ")
+        }
+        if self == .pls {
+            var lines = ["[playlist]", "NumberOfEntries=\(items.count)"]
+            for (index, item) in items.enumerated() {
+                lines += ["File\(index + 1)=\(item.url.absoluteString)", "Title\(index + 1)=\(title(item))", "Length\(index + 1)=-1"]
+            }
+            return (lines + ["Version=2"]).joined(separator: "\n") + "\n"
+        }
+        return (["#EXTM3U"] + items.flatMap { ["#EXTINF:-1,\(title($0))", $0.url.absoluteString] }).joined(separator: "\n") + "\n"
     }
 }

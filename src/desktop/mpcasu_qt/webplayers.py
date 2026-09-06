@@ -9,20 +9,24 @@ searches open in the matching tab; the user logs in with their normal account.
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 
 from PySide6.QtCore import QUrl, Qt, Signal
-from PySide6.QtWidgets import QLineEdit, QTabWidget, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QLabel, QLineEdit, QTabWidget, QVBoxLayout, QWidget
+
+from .browser_runtime import configure_widevine
+WIDEVINE_PATH = configure_widevine()
 
 try:
-    from PySide6.QtWebEngineCore import QWebEnginePage, QWebEngineProfile
+    from PySide6.QtWebEngineCore import QWebEnginePage, QWebEngineProfile, QWebEngineSettings
     from PySide6.QtWebEngineWidgets import QWebEngineView
     _HAVE_WEBENGINE = True
 except ImportError:
     QWebEnginePage = QWebEngineProfile = QWebEngineView = None
     _HAVE_WEBENGINE = False
 
-from casu.webproviders import WEB_PLAYERS, spotify_embed_url, web_player_url
+from casu.webproviders import WEB_PLAYERS, web_player_url
 
 BROWSE_URL = "https://duckduckgo.com/"
 
@@ -39,7 +43,30 @@ def _persistent_profile(parent) -> object | None:
     profile.setPersistentCookiesPolicy(QWebEngineProfile.ForcePersistentCookies)
     profile.setPersistentStoragePath(str(storage))
     profile.setHttpCacheType(QWebEngineProfile.DiskHttpCache)
+    # Keep Chromium's real engine/platform versions, without Qt's application
+    # token, which some sites mistake for an unsupported mobile/embed client.
+    profile.setHttpUserAgent(re.sub(r"\sQtWebEngine/[\d.]+", "", profile.httpUserAgent()))
     return profile
+
+
+if _HAVE_WEBENGINE:
+    class ProviderPage(QWebEnginePage):
+        def __init__(self, profile, parent, owner):
+            super().__init__(profile, parent)
+            self.owner = owner
+            self.settings().setAttribute(QWebEngineSettings.FullScreenSupportEnabled, True)
+            self.fullScreenRequested.connect(self._fullscreen)
+
+        def createWindow(self, window_type):
+            return self.owner._popup_page()
+
+        def _fullscreen(self, request):
+            request.accept()
+            window = self.owner.window()
+            if request.toggleOn():
+                window.showFullScreen()
+            else:
+                window.showNormal()
 
 
 class WebPlayerTabs(QWidget):
@@ -51,6 +78,13 @@ class WebPlayerTabs(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
+        self._drm_status = QLabel(
+            "DRM-Komponente erkannt. Die Verfügbarkeit wird vom Anbieter geprüft."
+            if WIDEVINE_PATH else
+            "Für geschützte Inhalte fehlt Widevine. Einen Browser mit Widevine installieren "
+            "oder CASU_WIDEVINE_PATH konfigurieren, danach CASU neu starten.")
+        self._drm_status.setWordWrap(True)
+        layout.addWidget(self._drm_status)
         self._tabs = QTabWidget()
         self._tabs.setDocumentMode(True)
         self._views: dict[str, QWebEngineView] = {}
@@ -70,7 +104,7 @@ class WebPlayerTabs(QWidget):
             if _HAVE_WEBENGINE:
                 view = QWebEngineView()
                 if self._profile is not None:
-                    view.setPage(QWebEnginePage(self._profile, view))
+                    view.setPage(ProviderPage(self._profile, view, self))
                 page_layout.addWidget(view)
             else:
                 view = None
@@ -91,10 +125,29 @@ class WebPlayerTabs(QWidget):
         self._entries["browse"] = browse_entry
         self._views["browse"] = QWebEngineView() if _HAVE_WEBENGINE else None
         if self._views["browse"] is not None and self._profile is not None:
-            self._views["browse"].setPage(QWebEnginePage(self._profile, self._views["browse"]))
+            self._views["browse"].setPage(ProviderPage(self._profile, self._views["browse"], self))
             browse_layout.addWidget(self._views["browse"])
-        self._tabs.addTab(browse_page, "BROWSE")
+        self._browse_index = self._tabs.addTab(browse_page, "BROWSE")
         layout.addWidget(self._tabs)
+        self._tabs.tabBarClicked.connect(self._tab_clicked)
+
+    def _tab_clicked(self, index):
+        keys = list(WEB_PLAYERS)
+        if 0 <= index < len(keys):
+            key = keys[index]
+            view = self._views.get(key)
+            if view is not None and view.url().isEmpty():
+                self.open(key)
+
+    def _popup_page(self):
+        view = QWebEngineView(self._tabs)
+        page = ProviderPage(self._profile, view, self)
+        view.setPage(page)
+        index = self._tabs.addTab(view, "Anmeldung")
+        self._tabs.setCurrentIndex(index)
+        view.titleChanged.connect(lambda title, v=view: self._tabs.setTabText(
+            self._tabs.indexOf(v), title[:30] or "Anmeldung"))
+        return page
 
     @property
     def tabs(self) -> QTabWidget:
@@ -105,8 +158,6 @@ class WebPlayerTabs(QWidget):
         if not text:
             return
         is_url = "://" in text and "." in text
-        if key == "spotify" and is_url:
-            text = spotify_embed_url(text)
         self.open(key, query=("" if is_url else text), url=(text if is_url else ""))
 
     def _submit_browse(self):
@@ -125,7 +176,7 @@ class WebPlayerTabs(QWidget):
         """Load a provider's web player at a search query or direct URL."""
         keys = list(WEB_PLAYERS)
         if provider == "browse":
-            self._tabs.setCurrentIndex(self._tabs.count() - 1)
+            self._tabs.setCurrentIndex(self._browse_index)
             view = self._views.get("browse")
             if view is not None:
                 target = url or (BROWSE_URL if not query
@@ -138,6 +189,8 @@ class WebPlayerTabs(QWidget):
         if query:
             self._entries[provider].setText(query)
         target = web_player_url(provider, query=query, url=url)
+        if provider == "spotify":
+            target = target.replace("https://open.spotify.com/embed/", "https://open.spotify.com/", 1)
         view = self._views[provider]
         if view is not None:
             view.load(QUrl(target))

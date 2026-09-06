@@ -1,5 +1,6 @@
 Unicode True
 !include "MUI2.nsh"
+!include "LogicLib.nsh"
 
 !define PRODUCT "MPCASU Player"
 !define VERSION "7.0.0"
@@ -20,6 +21,13 @@ RequestExecutionLevel user
 Section "MPCASU Player" SecMain
   SetOutPath "$INSTDIR"
   File /r "${STAGE}\*.*"
+  ; Official Evergreen runtime installs in-place; WebView2 stays inside MPCASU.
+  DetailPrint "Installing Microsoft Edge WebView2 Runtime (Internet required if missing)..."
+  ExecWait '"$INSTDIR\tools\MicrosoftEdgeWebview2Setup.exe" /silent /install' $0
+  ${If} $0 != 0
+    DetailPrint "WebView2 setup returned $0. An existing runtime may already be installed."
+  ${EndIf}
+
   CreateDirectory "$SMPROGRAMS\MPCASU Player"
   CreateShortcut "$SMPROGRAMS\MPCASU Player\MPCASU Player.lnk" "$INSTDIR\MPCASU.exe"
   CreateShortcut "$SMPROGRAMS\MPCASU Player\Uninstall.lnk" "$INSTDIR\Uninstall.exe"

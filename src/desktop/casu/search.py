@@ -36,6 +36,7 @@ class SearchResult:
     uploader: str
     source: str
     thumbnail: str = ""
+    playlist_title: str = ""
 
     def as_dict(self) -> dict:
         return asdict(self)
@@ -97,6 +98,7 @@ def _to_results(entries: list[dict], source: str, limit: int) -> list[SearchResu
             uploader=str(entry.get("uploader") or entry.get("channel") or "")[:200],
             source=source,
             thumbnail=thumbnail[:500],
+            playlist_title=str(entry.get("playlist_title") or "")[:300],
         ))
         if len(results) >= limit:
             break

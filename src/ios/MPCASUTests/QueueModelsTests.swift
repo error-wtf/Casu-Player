@@ -74,3 +74,33 @@ final class QueueModelsTests: XCTestCase {
         XCTAssertEqual(entries[1].url.absoluteString, "https://example.test/lists/second.mp3")
     }
 }
+
+final class PlaylistGroupTests: XCTestCase {
+    func testGroupsAndMetadataSurvivePersistence() throws {
+        let url = URL(string: "https://example.com/track")!
+        func item(_ group: String) -> QueueOccurrence {
+            QueueOccurrence(media: MediaIdentity(kind: .network, canonicalKey: url.absoluteString), title: "Überall", url: url, playlistID: group, playlistTitle: "Mix " + group)
+        }
+        let original = QueueSnapshot(occurrences: [item("A"), item("A"), item("B")])
+        let restored = try QueuePersistence.decode(QueuePersistence.encode(original))
+        let groups = QueueDisplayGroup.make(restored.occurrences)
+        XCTAssertEqual(groups.count, 2)
+        XCTAssertEqual(groups[0].items.count, 2)
+        XCTAssertEqual(groups[1].title, "Mix B")
+        for format in PlaylistExportFormat.allCases {
+            let output = format.render(restored.occurrences)
+            XCTAssertTrue(output.contains("Überall"))
+            XCTAssertTrue(output.contains(url.absoluteString))
+        }
+        XCTAssertTrue(PlaylistExportFormat.pls.render(restored.occurrences).contains("NumberOfEntries=3"))
+    }
+}
+
+final class YouTubePlaylistURLTests: XCTestCase {
+    func testCanonicalPlaylistLinksResolveOnlyYouTubeVideos() {
+        XCTAssertEqual(YouTubeClient.videoID(URL(string: "https://www.youtube.com/watch?v=abcdefghijk")!), "abcdefghijk")
+        XCTAssertEqual(YouTubeClient.videoID(URL(string: "https://youtu.be/abcdefghijk")!), "abcdefghijk")
+        XCTAssertNil(YouTubeClient.videoID(URL(string: "https://example.com/watch?v=abcdefghijk")!))
+        XCTAssertNil(YouTubeClient.videoID(URL(string: "https://www.youtube.com/playlist?list=PL123")!))
+    }
+}

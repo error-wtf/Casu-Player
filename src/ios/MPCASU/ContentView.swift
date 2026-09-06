@@ -1,5 +1,6 @@
 import AVKit
 import SwiftUI
+import SafariServices
 import UniformTypeIdentifiers
 
 struct ContentView: View {
@@ -10,6 +11,8 @@ struct ContentView: View {
     @StateObject private var youtube = YouTubeModel()
     @State private var networkURL = ""
     @State private var exportedPlaylist: URL?
+    @State private var providerURL: URL?
+    @State private var showingProvider = false
 
     var body: some View {
         TabView {
@@ -22,6 +25,15 @@ struct ContentView: View {
             settingsView
                 .tabItem { Label("Settings", systemImage: "gearshape") }
         }
+        .sheet(isPresented: $showingProvider) {
+            if let url = providerURL { ProviderBrowserView(url: url).ignoresSafeArea() }
+        }
+    }
+
+    private func queueRow(_ item: QueueOccurrence) -> some View {
+        Text(item.title).tag(item.id)
+            .accessibilityIdentifier("queue.occurrence.\(item.id)")
+            .swipeActions { Button(role: .destructive) { model.remove(item) } label: { Label("Remove", systemImage: "trash") } }
     }
 
     private var playerView: some View {
@@ -29,16 +41,30 @@ struct ContentView: View {
             List(selection: Binding(get: { model.queue.currentOccurrenceID }, set: { id in
                 if let item = model.queue.occurrences.first(where: { $0.id == id }) { model.select(item) }
             })) {
-                ForEach(model.queue.occurrences) { item in
-                    Text(item.title).tag(item.id)
-                        .accessibilityIdentifier("queue.occurrence.\(item.id)")
-                        .swipeActions { Button(role: .destructive) { model.remove(item) } label: { Label("Remove", systemImage: "trash") } }
-                }.onMove(perform: model.move)
+                ForEach(QueueDisplayGroup.make(model.queue.occurrences)) { group in
+                    if let title = group.title {
+                        DisclosureGroup("\(title) · \(group.items.count)") {
+                            ForEach(group.items) { item in queueRow(item) }
+                                .onMove { source, destination in model.moveWithinGroup(group, from: source, to: destination) }
+                        }
+                        .contextMenu {
+                            Button("Play playlist") { if let item = group.items.first { model.select(item); if !model.isPlaying { model.togglePlayback() } } }
+                            Button("Remove playlist", role: .destructive) { for item in group.items { model.remove(item) } }
+                        }
+                    } else if let item = group.items.first { queueRow(item) }
+                }.onMove(perform: model.moveGroups)
             }
             .navigationTitle("Queue")
             .toolbar {
                 EditButton()
-                Button { exportedPlaylist = try? model.exportPlaylist() } label: { Label("Save playlist", systemImage: "square.and.arrow.up") }
+                Menu {
+                    ForEach(PlaylistExportFormat.allCases) { format in
+                        Button(format.rawValue.uppercased()) {
+                            do { exportedPlaylist = try model.exportPlaylist(format: format) }
+                            catch { model.errorMessage = "Playlist export failed: \(error.localizedDescription)" }
+                        }
+                    }
+                } label: { Label("Save playlist", systemImage: "square.and.arrow.up") }
                 Button { importing = true } label: { Label("Open", systemImage: "folder") }.accessibilityIdentifier("queue.open")
             }
             .sheet(isPresented: Binding(get: { exportedPlaylist != nil }, set: { if !$0 { exportedPlaylist = nil } })) {
@@ -167,7 +193,10 @@ struct ContentView: View {
     }
 
     private func providerLink(_ name: String, _ address: String) -> some View {
-        Link(destination: URL(string: address)!) {
+        Button {
+            providerURL = URL(string: address)
+            showingProvider = true
+        } label: {
             Label(name, systemImage: "safari").padding(.horizontal, 8).padding(.vertical, 6)
         }
         .buttonStyle(.bordered)
@@ -241,4 +270,14 @@ struct ContentView: View {
             .task { library.refresh() }
         }
     }
+}
+
+
+/// Safari's browser controller is presented inside MPCASU, never via openURL.
+private struct ProviderBrowserView: UIViewControllerRepresentable {
+    let url: URL
+    func makeUIViewController(context: Context) -> SFSafariViewController {
+        SFSafariViewController(url: url)
+    }
+    func updateUIViewController(_ controller: SFSafariViewController, context: Context) { }
 }

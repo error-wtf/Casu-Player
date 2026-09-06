@@ -369,6 +369,7 @@ public final class PlayerEngine implements
     }
 
     private void stopInternal(boolean persist) {
+        ++openSeq; // Cancel pending provider/network opens before stopping.
         releaseVisualizer();
         releaseVlc();
         if (player != null) {
@@ -540,6 +541,29 @@ public final class PlayerEngine implements
         pendingRate = rate;
         String source = item.url;
         String kind = item.kind == null ? "" : item.kind;
+        String providerSource = item.sourceUrl != null ? item.sourceUrl : source;
+        android.net.Uri providerUri = android.net.Uri.parse(providerSource);
+        String host = providerUri.getHost();
+        boolean youtube = host != null && (host.equals("youtu.be") || host.equals("youtube.com") || host.endsWith(".youtube.com"));
+        String videoId = youtube ? YouTubeClient.extractVideoId(providerSource) : null;
+        if (videoId != null) {
+            stopInternal(false);
+            final long seq = ++openSeq;
+            new Thread(() -> {
+                try {
+                    String resolved = YouTubeClient.resolveMediaUrl(videoId);
+                    main.post(() -> {
+                        if (seq != openSeq || current() != item) return;
+                        openSource(resolved, true);
+                    });
+                } catch (Exception error) {
+                    main.post(() -> {
+                        if (seq == openSeq && current() == item) fireError("YouTube: " + error.getMessage());
+                    });
+                }
+            }, "mpcasu-youtube-resolve").start();
+            return;
+        }
         if ("casu".equals(kind) || "mp5".equals(kind)
                 || source.toLowerCase().endsWith(".casu")
                 || source.toLowerCase().endsWith(".mp5")) {

@@ -78,6 +78,8 @@
 #include <QSpinBox>
 #include <QSplitter>
 #include <QStandardPaths>
+#include <QCryptographicHash>
+#include <QUrlQuery>
 #include <thread>
 #include <QPointer>
 #include <filesystem>
@@ -2268,7 +2270,12 @@ void MainWindow::build_youtube_page() {
         // Linux parity: search results enter the QUEUE with their title
         // (never a raw-URL "Now Playing"), then play.
         const QString title = item->data(Qt::UserRole + 1).toString();
-        queue_and_play(url, title);
+        if (casu::network::is_youtube_url(url.toStdString()) && QUrlQuery(QUrl(url)).hasQueryItem(QStringLiteral("list"))) {
+            youtube_url_->setText(url);
+            on_youtube_play();
+        } else {
+            queue_and_play(url, title);
+        }
     });
     layout->addWidget(yt_results_, 1);
 
@@ -3461,11 +3468,15 @@ void MainWindow::save_playlist_file() {
         toast(QStringLiteral("The queue is empty — nothing to save."));
         return;
     }
+    QString selectedFilter;
     QString file = QFileDialog::getSaveFileName(this, QStringLiteral("Save playlist"),
                                                 QDir::homePath() + "/queue.m3u",
-                                                QStringLiteral("M3U (*.m3u *.m3u8);;PLS (*.pls);;XSPF (*.xspf);;MPCASU JSON (*.json)"));
+                                                QStringLiteral("M3U (*.m3u);;M3U8 UTF-8 (*.m3u8);;PLS (*.pls);;XSPF (*.xspf);;MPCASU JSON (*.json)"), &selectedFilter);
     if (file.isEmpty()) return;
-    if (!file.contains(QLatin1Char('.'))) file += QStringLiteral(".m3u");
+    if (QFileInfo(file).suffix().isEmpty()) {
+        const auto match = QRegularExpression(QStringLiteral("\\*([.]\\w+)")).match(selectedFilter);
+        file += match.hasMatch() ? match.captured(1) : QStringLiteral(".m3u");
+    }
     // Save the queue as ONE flat playlist: playlist groups are resolved into
     // their entries so the file contains real media/URLs, never references.
     PlaylistModel flat;
@@ -4552,8 +4563,19 @@ void MainWindow::on_youtube_play() {
                     if (token.contains(QStringLiteral("list="))) {
                         const auto found = casu::network::YtDlp().expand_playlist(
                             token.toStdString(), 100, 60000);
+                        if (found.empty()) continue;
+                        const QString id = QUrlQuery(QUrl(token)).queryItemValue(QStringLiteral("list"));
+                        const QString directory = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)
+                            + QStringLiteral("/youtube-playlists");
+                        if (!QDir().mkpath(directory)) throw std::runtime_error("Cannot create playlist directory");
+                        const QString hash = QString::fromLatin1(QCryptographicHash::hash(id.toUtf8(), QCryptographicHash::Sha256).toHex().left(12));
+                        const QString path = directory + QStringLiteral("/YouTube-%1.m3u8").arg(hash);
+                        PlaylistModel group;
                         for (const auto& r : found)
-                            urls.append(QString::fromStdString(r.url));
+                            group.add(QString::fromStdString(r.url), QString::fromStdString(r.title));
+                        const auto error = PlaylistModel::save_file(path, group);
+                        if (!error.empty()) throw std::runtime_error(error);
+                        urls.append(path);
                     } else {
                         urls.append(token);
                     }
@@ -4566,8 +4588,8 @@ void MainWindow::on_youtube_play() {
                     }
                     add_files(urls);
                     youtube_status_->setText(
-                        QStringLiteral("Queued %1 videos").arg(urls.size()));
-                    status(QStringLiteral("Added %1 videos to the queue").arg(urls.size()));
+                        QStringLiteral("Queued %1 videos/playlists").arg(urls.size()));
+                    status(QStringLiteral("Added %1 videos/playlists to the queue").arg(urls.size()));
                 }, Qt::QueuedConnection);
             } catch (const std::exception& e) {
                 QMetaObject::invokeMethod(this, [this, e] {

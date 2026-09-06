@@ -244,7 +244,7 @@ public final class PlaylistIO {
         for (MediaItem item : items) {
             long seconds = 0; // durations are not tracked per-queue-entry
             sb.append("#EXTINF:").append(seconds).append(',').append(orEmpty(item.title)).append('\n');
-            sb.append(item.url).append('\n');
+            sb.append(item.exportUrl()).append('\n');
         }
         return sb.toString();
     }
@@ -253,7 +253,7 @@ public final class PlaylistIO {
         StringBuilder sb = new StringBuilder("[playlist]\n");
         for (int i = 0; i < items.size(); i++) {
             MediaItem item = items.get(i);
-            sb.append("File").append(i + 1).append('=').append(item.url).append('\n');
+            sb.append("File").append(i + 1).append('=').append(item.exportUrl()).append('\n');
             sb.append("Title").append(i + 1).append('=').append(orEmpty(item.title)).append('\n');
             sb.append("Length").append(i + 1).append("=-1\n");
         }
@@ -268,7 +268,7 @@ public final class PlaylistIO {
         sb.append("<playlist version=\"1\" xmlns=\"http://xspf.org/ns/0/\">\n");
         sb.append("  <title>").append(escapeXml(orEmpty(name))).append("</title>\n  <trackList>\n");
         for (MediaItem item : items) {
-            sb.append("    <track><location>").append(escapeXml(item.url))
+            sb.append("    <track><location>").append(escapeXml(item.exportUrl()))
               .append("</location><title>").append(escapeXml(orEmpty(item.title)))
               .append("</title></track>\n");
         }
@@ -284,7 +284,7 @@ public final class PlaylistIO {
             JSONArray tracks = new JSONArray();
             for (MediaItem item : items) {
                 JSONObject track = new JSONObject();
-                track.put("location", item.url);
+                track.put("location", item.exportUrl());
                 track.put("title", orEmpty(item.title));
                 tracks.put(track);
             }
