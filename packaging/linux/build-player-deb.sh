@@ -9,16 +9,14 @@ mkdir -p "$STAGE/DEBIAN" "$STAGE/usr/bin" "$STAGE/usr/share/mpcasu-player" \
   "$STAGE/usr/share/applications" "$STAGE/usr/share/icons/hicolor/256x256/apps"
 
 cp -a "$ROOT/src/desktop/." "$STAGE/usr/share/mpcasu-player/"
-cp -a "$ROOT/src/windows/assets" "$STAGE/usr/share/mpcasu-player/"
-find "$STAGE" -type f \( -name "*.pyc" -o -name "*.pyo" \) -delete
-cp "$ROOT/src/windows/assets/mpcasu_player_icon.png" "$STAGE/usr/share/icons/hicolor/256x256/apps/mpcasu-player.png"
+cp "$ROOT/assets/mpcasu_player_icon.png" "$STAGE/usr/share/icons/hicolor/256x256/apps/mpcasu-player.png"
 
 install -m 0755 "$ROOT/packaging/linux/mpcasu-player" "$STAGE/usr/bin/mpcasu-player"
 install -m 0644 "$ROOT/packaging/linux/mpcasu-player.desktop" "$STAGE/usr/share/applications/mpcasu-player.desktop"
 
 cat > "$STAGE/DEBIAN/control" <<'EOF'
 Package: mpcasu-player
-Version: 7.0.1
+Version: 7.0.0
 Section: video
 Priority: optional
 Architecture: all
@@ -30,4 +28,4 @@ EOF
 
 mkdir -p "$ROOT/dist"
 find "$STAGE" -exec touch -h -d '@0' {} +
-dpkg-deb --build --root-owner-group "$STAGE" "$ROOT/dist/mpcasu-player_7.0.1_all.deb" >/dev/null
+dpkg-deb --build --root-owner-group "$STAGE" "$ROOT/dist/mpcasu-player_7.0.0_all.deb" >/dev/null

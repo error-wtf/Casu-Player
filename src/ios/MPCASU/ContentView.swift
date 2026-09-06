@@ -1,6 +1,5 @@
 import AVKit
 import SwiftUI
-import UIKit
 import UniformTypeIdentifiers
 
 struct ContentView: View {
@@ -11,7 +10,6 @@ struct ContentView: View {
     @StateObject private var youtube = YouTubeModel()
     @State private var networkURL = ""
     @State private var exportedPlaylist: URL?
-    @State private var providerError: String?
 
     var body: some View {
         TabView {
@@ -23,12 +21,6 @@ struct ContentView: View {
                 .tabItem { Label("Search", systemImage: "magnifyingglass") }
             settingsView
                 .tabItem { Label("Settings", systemImage: "gearshape") }
-        }
-        .alert("Provider", isPresented: Binding(get: { providerError != nil },
-                                                set: { if !$0 { providerError = nil } })) {
-            Button("OK", role: .cancel) { providerError = nil }
-        } message: {
-            Text(providerError ?? "")
         }
     }
 
@@ -175,25 +167,7 @@ struct ContentView: View {
     }
 
     private func providerLink(_ name: String, _ address: String) -> some View {
-        Button {
-            let url = URL(string: address)!
-            if name == "Netflix" && UIDevice.current.userInterfaceIdiom == .phone {
-                // iPhone playback belongs in Netflix's app. Never embed it in WKWebView.
-                UIApplication.shared.open(url, options: [.universalLinksOnly: true]) { opened in
-                    if !opened {
-                        DispatchQueue.main.async {
-                            providerError = "Für Netflix auf dem iPhone bitte die offizielle Netflix-App installieren und den Link erneut öffnen."
-                        }
-                    }
-                }
-            } else {
-                UIApplication.shared.open(url, options: [:]) { opened in
-                    if !opened {
-                        DispatchQueue.main.async { providerError = "Der Anbieter konnte nicht geöffnet werden." }
-                    }
-                }
-            }
-        } label: {
+        Link(destination: URL(string: address)!) {
             Label(name, systemImage: "safari").padding(.horizontal, 8).padding(.vertical, 6)
         }
         .buttonStyle(.bordered)

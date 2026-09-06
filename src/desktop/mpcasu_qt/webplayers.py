@@ -2,9 +2,9 @@
 # SPDX-FileCopyrightText: 2026 Lino Casu
 """Tabbed embedded web-player views (Spotify/Hearthis/Tidal/Netflix).
 
-DRM providers open in a maintained system browser. Non-DRM sites retain
-embedded views. Provider tabs, direct URLs and embedded navigation share
-the same routing policy.
+Each provider gets its own tab with an embedded Chromium (QtWebEngine) view, a
+URL/search field and the official web player loaded through it. Direct URLs and
+searches open in the matching tab; the user logs in with their normal account.
 """
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ import os
 from pathlib import Path
 
 from PySide6.QtCore import QUrl, Qt, Signal
-from PySide6.QtWidgets import QLabel, QLineEdit, QPushButton, QTabWidget, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QLineEdit, QTabWidget, QVBoxLayout, QWidget
 
 try:
     from PySide6.QtWebEngineCore import QWebEnginePage, QWebEngineProfile
@@ -22,8 +22,7 @@ except ImportError:
     QWebEnginePage = QWebEngineProfile = QWebEngineView = None
     _HAVE_WEBENGINE = False
 
-from casu.webproviders import (EXTERNAL_PROVIDERS, WEB_PLAYERS, open_web_player,
-                               provider_for_url, web_player_url)
+from casu.webproviders import WEB_PLAYERS, spotify_embed_url, web_player_url
 
 BROWSE_URL = "https://duckduckgo.com/"
 
@@ -43,31 +42,8 @@ def _persistent_profile(parent) -> object | None:
     return profile
 
 
-if _HAVE_WEBENGINE:
-    class RoutedPage(QWebEnginePage):
-        """Hand off DRM navigation, including links and redirects from Browse."""
-        def __init__(self, profile, parent, launch):
-            super().__init__(profile, parent)
-            self._launch = launch
-            self.newWindowRequested.connect(self._new_window)
-
-        def _new_window(self, request):
-            url = request.requestedUrl().toString()
-            if url:
-                self._launch(provider_for_url(url) or "browse", url)
-
-        def acceptNavigationRequest(self, url, navigation_type, is_main_frame):
-            provider = provider_for_url(url.toString())
-            if is_main_frame and provider in EXTERNAL_PROVIDERS:
-                self._launch(provider, url.toString())
-                return False
-            return super().acceptNavigationRequest(url, navigation_type, is_main_frame)
-
-
 class WebPlayerTabs(QWidget):
     """Tab widget with one embedded web player per provider."""
-
-    browser_launched = Signal(str, bool)
 
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
@@ -79,8 +55,6 @@ class WebPlayerTabs(QWidget):
         self._tabs.setDocumentMode(True)
         self._views: dict[str, QWebEngineView] = {}
         self._entries: dict[str, QLineEdit] = {}
-        self._targets = {}
-        self._messages = {}
         self._profile = _persistent_profile(self)
         for key, spec in WEB_PLAYERS.items():
             page = QWidget()
@@ -93,22 +67,10 @@ class WebPlayerTabs(QWidget):
             entry.setPlaceholderText(f"{spec['label']} URL oder Suchbegriff…")
             entry.returnPressed.connect(lambda k=key: self._submit(k))
             page_layout.addWidget(entry)
-            if key in EXTERNAL_PROVIDERS:
-                view = None
-                message = QLabel("Wiedergabe im Browser mit DRM-Unterstützung. "
-                                 "Dort mit deinem Account anmelden.")
-                message.setWordWrap(True)
-                self._messages[key] = message
-                page_layout.addWidget(message)
-                button = QPushButton("Im Browser öffnen")
-                button.clicked.connect(lambda checked=False, k=key: self.open(
-                    k, url=self._targets.get(k, "")))
-                page_layout.addWidget(button)
-                page_layout.addStretch()
-            elif _HAVE_WEBENGINE:
+            if _HAVE_WEBENGINE:
                 view = QWebEngineView()
                 if self._profile is not None:
-                    view.setPage(RoutedPage(self._profile, view, self._launch_external))
+                    view.setPage(QWebEnginePage(self._profile, view))
                 page_layout.addWidget(view)
             else:
                 view = None
@@ -129,40 +91,10 @@ class WebPlayerTabs(QWidget):
         self._entries["browse"] = browse_entry
         self._views["browse"] = QWebEngineView() if _HAVE_WEBENGINE else None
         if self._views["browse"] is not None and self._profile is not None:
-            self._views["browse"].setPage(RoutedPage(self._profile, self._views["browse"], self._launch_external))
+            self._views["browse"].setPage(QWebEnginePage(self._profile, self._views["browse"]))
             browse_layout.addWidget(self._views["browse"])
         self._tabs.addTab(browse_page, "BROWSE")
         layout.addWidget(self._tabs)
-        self._tabs.tabBarClicked.connect(self._tab_clicked)
-
-    def _tab_clicked(self, index):
-        keys = list(WEB_PLAYERS)
-        if 0 <= index < len(keys) and keys[index] in EXTERNAL_PROVIDERS:
-            key = keys[index]
-            self.open(key, url=self._targets.get(key, ""))
-
-    def _launch_external(self, provider, target):
-        self._targets[provider] = target
-        ok = open_web_player(provider, url=target)
-        message = self._messages.get(provider)
-        if message is not None:
-            message.setText(
-                "Browser gestartet. Dort anmelden und geschützte Inhalte/DRM aktivieren."
-                if ok else
-                "Browser konnte nicht gestartet werden. Installiere einen aktuellen "
-                "Google Chrome, Microsoft Edge oder Firefox (macOS: Safari).")
-        self.browser_launched.emit(provider, ok)
-        return ok
-
-    def _load_target(self, key, target):
-        provider = provider_for_url(target)
-        if provider in EXTERNAL_PROVIDERS:
-            return self._launch_external(provider, target)
-        view = self._views.get(key)
-        if view is not None:
-            view.load(QUrl(target))
-            return True
-        return False
 
     @property
     def tabs(self) -> QTabWidget:
@@ -173,6 +105,8 @@ class WebPlayerTabs(QWidget):
         if not text:
             return
         is_url = "://" in text and "." in text
+        if key == "spotify" and is_url:
+            text = spotify_embed_url(text)
         self.open(key, query=("" if is_url else text), url=(text if is_url else ""))
 
     def _submit_browse(self):
@@ -183,27 +117,30 @@ class WebPlayerTabs(QWidget):
             target = text
         else:
             target = "https://duckduckgo.com/?q=" + text.replace(" ", "+")
-        self._load_target("browse", target)
+        view = self._views.get("browse")
+        if view is not None:
+            view.load(QUrl(target))
 
     def open(self, provider: str, *, query: str = "", url: str = ""):
         """Load a provider's web player at a search query or direct URL."""
         keys = list(WEB_PLAYERS)
         if provider == "browse":
             self._tabs.setCurrentIndex(self._tabs.count() - 1)
-            target = url or (BROWSE_URL if not query
-                             else "https://duckduckgo.com/?q=" + query.replace(" ", "+"))
-            return self._load_target("browse", target)
+            view = self._views.get("browse")
+            if view is not None:
+                target = url or (BROWSE_URL if not query
+                                 else "https://duckduckgo.com/?q=" + query.replace(" ", "+"))
+                view.load(QUrl(target))
+            return
         if provider not in self._views:
             provider = "spotify"
         self._tabs.setCurrentIndex(keys.index(provider))
         if query:
             self._entries[provider].setText(query)
         target = web_player_url(provider, query=query, url=url)
-        self._entries[provider].setText(url or query)
-        self._targets[provider] = target
-        if provider in EXTERNAL_PROVIDERS:
-            return self._launch_external(provider, target)
-        return self._load_target(provider, target)
+        view = self._views[provider]
+        if view is not None:
+            view.load(QUrl(target))
 
     def play_video(self, url: str, title: str = "") -> bool:
         """Stream a direct media URL in an embedded <video> element (yt-dlp).

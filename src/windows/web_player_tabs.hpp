@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: LicenseRef-CASU-AntiCapitalist-1.4
-// Provider and Browse pages launch the system browser. Embedded rendering
-// is retained only for direct media playback, not authenticated web players.
+// Tabbed embedded web-player views (Spotify/Hearthis/Tidal/Netflix/BROWSE).
+// Exact port of mpcasu_qt/webplayers.py supporting Microsoft Edge WebView2
+// (with DRM/Widevine on Windows) and QtWebEngine (Chromium).
 #pragma once
 
 #include "casu/web/webproviders.hpp"

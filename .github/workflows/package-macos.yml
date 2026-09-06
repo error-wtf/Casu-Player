@@ -1,4 +1,4 @@
-name: Build macOS Player 7.0.1
+name: Build macOS Player 7.0.0
 
 on:
   workflow_dispatch:
@@ -26,8 +26,7 @@ jobs:
           python3 -m venv "$RUNNER_TEMP/venv"
           source "$RUNNER_TEMP/venv/bin/activate"
           python -m pip install --disable-pip-version-check \
-            'PySide6==6.10.2' python-vlc pyinstaller numpy zstd yt-dlp pytest
-          QT_QPA_PLATFORM=offscreen PYTHONPATH=src/desktop python -m pytest -q tests/test_browser_routing.py
+            'PySide6==6.10.2' python-vlc pyinstaller numpy zstd yt-dlp
           python -m PyInstaller --noconfirm --clean --windowed \
             --name 'MPCASU Player' --paths src/desktop \
             --add-data 'src/windows/assets:assets' src/desktop/mpcasu_qt/app.py
@@ -60,39 +59,15 @@ jobs:
           mkdir -p "$stage"
           ditto "$app" "$stage/MPCASU Player.app"
           ln -s /Applications "$stage/Applications"
-          hdiutil create -quiet -volname 'MPCASU Player 7.0.1' \
+          hdiutil create -quiet -volname 'MPCASU Player 7.0.0' \
             -srcfolder "$stage" -ov -format UDZO \
-            dist/MPCASU-Player-macOS-7.0.1.dmg
+            dist/MPCASU-Player-macOS-7.0.0.dmg
+      - name: Publish corrected DMG
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload v7.0.0 dist/MPCASU-Player-macOS-7.0.0.dmg --clobber
       - uses: actions/upload-artifact@v4
         with:
           name: mpcasu-player-macos
-          path: dist/MPCASU-Player-macOS-7.0.1.dmg
-          if-no-files-found: error
-
-  ios:
-    runs-on: macos-15
-    steps:
-      - uses: actions/checkout@v4
-      - name: Generate iOS project
-        run: |
-          brew install xcodegen
-          cd src/ios
-          xcodegen generate
-      - name: Test iOS simulator
-        working-directory: src/ios
-        run: |
-          device=$(xcrun simctl list devices available -j | python3 -c 'import json,sys; d=json.load(sys.stdin); print(next(v["udid"] for vs in d["devices"].values() for v in vs if v["name"].startswith("iPhone")))')
-          xcodebuild test -project MPCASU.xcodeproj -scheme MPCASU -configuration Debug -sdk iphonesimulator -destination "platform=iOS Simulator,id=$device" -derivedDataPath ../../build/ios-simulator CODE_SIGNING_ALLOWED=NO
-      - name: Build unsigned iOS package
-        working-directory: src/ios
-        run: |
-          xcodebuild archive -project MPCASU.xcodeproj -scheme MPCASU -configuration Release -sdk iphoneos -destination 'generic/platform=iOS' -archivePath ../../build/MPCASU.xcarchive CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO
-          mkdir -p ../../dist/ios/Payload
-          cp -R ../../build/MPCASU.xcarchive/Products/Applications/MPCASU.app ../../dist/ios/Payload/
-          cd ../../dist/ios
-          zip -qr ../MPCASU-Player-iOS-7.0.1.ipa Payload
-      - uses: actions/upload-artifact@v4
-        with:
-          name: mpcasu-player-ios
-          path: dist/MPCASU-Player-iOS-7.0.1.ipa
+          path: dist/MPCASU-Player-macOS-7.0.0.dmg
           if-no-files-found: error

@@ -2298,13 +2298,13 @@ void MainWindow::open_web_player(const QString& provider, const QString& query,
     if (!web_player_tabs_) return;
     web_player_tabs_->open(provider, query, url);
     navigate(QStringLiteral("WEB PLAYERS"));
-    // Provider pages use the system browser, including direct Browse links.
+    // Mirror the reference toast "X geöffnet im eingebetteten Browser".
     QString label = provider.toUpper();
     for (const auto& spec : casu::web::web_players())
         if (QString::fromStdString(spec.key) == provider)
             label = QString::fromStdString(spec.label);
     if (provider == QLatin1String("browse")) label = QStringLiteral("BROWSE");
-    status(QStringLiteral("%1: Browser-Übergabe — Status im Web-Player-Tab").arg(label));
+    status(QStringLiteral("%1 geöffnet im eingebetteten Browser").arg(label));
 }
 
 void MainWindow::navigate(const QString& page) {

@@ -172,11 +172,7 @@ public final class ProviderActivity extends Activity {
             input = looksLikeDomain ? "https://" + input
                     : "https://www.google.com/search?q=" + Uri.encode(input);
         }
-        if (ProviderBrowser.requiresExternal(input)) {
-            ProviderBrowser.open(this, input);
-        } else {
-            active.loadUrl(input);
-        }
+        active.loadUrl(input);
         urlInput.clearFocus();
     }
 
@@ -195,10 +191,7 @@ public final class ProviderActivity extends Activity {
         tabs.add(view);
         tabTitles.add(providerName);
         attachTab(view);
-        if (url != null && !url.isEmpty()) {
-            if (ProviderBrowser.requiresExternal(url)) ProviderBrowser.open(this, url);
-            else view.loadUrl(url);
-        }
+        if (url != null && !url.isEmpty()) view.loadUrl(url);
         renderTabStrip();
         return view;
     }
@@ -321,10 +314,6 @@ public final class ProviderActivity extends Activity {
             @Override
             public boolean shouldOverrideUrlLoading(WebView v, WebResourceRequest request) {
                 Uri uri = request.getUrl();
-                if (request.isForMainFrame() && ProviderBrowser.requiresExternal(uri.toString())) {
-                    ProviderBrowser.open(ProviderActivity.this, uri.toString());
-                    return true;
-                }
                 String scheme = uri.getScheme() == null ? "" : uri.getScheme();
                 if (scheme.equals("http") || scheme.equals("https")
                         || scheme.equals("about") || scheme.equals("data")
