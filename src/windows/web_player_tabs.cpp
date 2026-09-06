@@ -441,20 +441,17 @@ void WebPlayerTabs::build_tabs() {
         QObject::connect(entry, &QLineEdit::returnPressed, this, [this, key] { submit(key); });
         entries_[key] = entry;
 
-#if defined(CASU_HAVE_WEBENGINE)
-        auto* qwe_view = new QWebEngineView(page);
-        qwe_view->setPage(new QWebEnginePage(profile, qwe_view));
-        views_[key] = qwe_view;
-        qobject_cast<QVBoxLayout*>(page->layout())->addWidget(qwe_view);
-#elif defined(CASU_HAVE_WEBVIEW2)
-        auto* wv2_view = new WebContainerWidget(key, label, page);
-        views_[key] = wv2_view;
-        qobject_cast<QVBoxLayout*>(page->layout())->addWidget(wv2_view);
-#else
-        auto* fallback_view = new WebContainerWidget(key, label, page);
-        views_[key] = fallback_view;
-        qobject_cast<QVBoxLayout*>(page->layout())->addWidget(fallback_view);
-#endif
+        auto* message = new QLabel(QStringLiteral("Wiedergabe im Systembrowser. "
+            "Aktuellen Edge, Chrome, Firefox oder Safari mit DRM verwenden."), page);
+        message->setWordWrap(true);
+        message->setObjectName(QStringLiteral("browserStatus"));
+        qobject_cast<QVBoxLayout*>(page->layout())->addWidget(message);
+        auto* launch = new QPushButton(QStringLiteral("Im Browser öffnen"), page);
+        qobject_cast<QVBoxLayout*>(page->layout())->addWidget(launch);
+        QObject::connect(launch, &QPushButton::clicked, this, [this, key] {
+            if (entries_.value(key)->text().trimmed().isEmpty()) open(key);
+            else submit(key);
+        });
         tabs_->addTab(page, label);
     }
 
@@ -483,7 +480,18 @@ void WebPlayerTabs::build_tabs() {
     views_[QStringLiteral("browse")] = browse_fallback;
     qobject_cast<QVBoxLayout*>(browse_page->layout())->addWidget(browse_fallback);
 #endif
+    auto* message = new QLabel(QStringLiteral("Webseiten öffnen im Systembrowser."), browse_page);
+    message->setObjectName(QStringLiteral("browserStatus"));
+    qobject_cast<QVBoxLayout*>(browse_page->layout())->insertWidget(1, message);
     tabs_->addTab(browse_page, QStringLiteral("BROWSE"));
+    QObject::connect(tabs_, &QTabWidget::tabBarClicked, this, [this](int index) {
+        const auto& specs = casu::web::web_players();
+        if (index >= 0 && index < static_cast<int>(specs.size())) {
+            const QString key = QString::fromStdString(specs[index].key);
+            if (entries_.value(key)->text().trimmed().isEmpty()) open(key);
+            else submit(key);
+        }
+    });
 }
 
 QWidget* WebPlayerTabs::make_page(const QString& key, const QString& label,
@@ -509,9 +517,6 @@ void WebPlayerTabs::submit(const QString& key) {
     QString text = entry->text().trimmed();
     if (text.isEmpty()) return;
     const bool is_url = text.contains(QLatin1String("://")) && text.contains(QLatin1Char('.'));
-    if (key == QLatin1String("spotify") && is_url) {
-        text = QString::fromStdString(casu::web::spotify_embed_url(text.toStdString()));
-    }
     open(key, is_url ? QString() : text, is_url ? text : QString());
 }
 
@@ -528,63 +533,38 @@ void WebPlayerTabs::submit_browse() {
         q.replace(QLatin1Char(' '), QLatin1String("+"));
         target = QStringLiteral("https://duckduckgo.com/?q=") + q;
     }
-    QWidget* view = views_.value(QStringLiteral("browse"));
-    if (!view) return;
-#if defined(CASU_HAVE_WEBENGINE)
-    if (auto* qwe = qobject_cast<QWebEngineView*>(view)) qwe->load(QUrl(target));
-#else
-    if (auto* wv = static_cast<WebContainerWidget*>(view)) wv->load_url(target);
-#endif
+    open(QStringLiteral("browse"), QString(), target);
 }
 
 void WebPlayerTabs::open(const QString& provider, const QString& query,
                          const QString& url) {
-    QString key = provider;
-    int browse_index = tabs_->count() - 1;
+    QString key = entries_.contains(provider) ? provider : QStringLiteral("spotify");
+    QString target = url;
+    int index = tabs_->count() - 1;
     if (key == QLatin1String("browse")) {
-        tabs_->setCurrentIndex(browse_index);
-        QString target = url;
         if (target.isEmpty())
-            target = query.isEmpty()
-                         ? QString::fromStdString(casu::web::browse_url())
-                         : QStringLiteral("https://duckduckgo.com/?q=") +
-                               QString(query).replace(QLatin1Char(' '), QLatin1String("+"));
-        QWidget* view = views_.value(key);
-        if (view) {
-#if defined(CASU_HAVE_WEBENGINE)
-            if (auto* qwe = qobject_cast<QWebEngineView*>(view)) qwe->load(QUrl(target));
-#else
-            if (auto* wv = static_cast<WebContainerWidget*>(view)) wv->load_url(target);
-#endif
-        }
-        return;
-    }
-
-    if (!entries_.contains(key)) key = QStringLiteral("spotify");
-    int index = 0;
-    const auto specs = casu::web::web_players();
-    for (std::size_t i = 0; i < specs.size(); ++i) {
-        if (QString::fromStdString(specs[i].key) == key) {
-            index = static_cast<int>(i);
-            break;
-        }
+            target = query.isEmpty() ? QString::fromStdString(casu::web::browse_url())
+                : QStringLiteral("https://duckduckgo.com/?q=") + QString::fromLatin1(QUrl::toPercentEncoding(query));
+    } else {
+        target = QString::fromStdString(casu::web::web_player_url(
+            key.toStdString(), query.toStdString(), url.toStdString()));
+        const auto& specs = casu::web::web_players();
+        for (std::size_t i = 0; i < specs.size(); ++i)
+            if (QString::fromStdString(specs[i].key) == key) index = static_cast<int>(i);
     }
     tabs_->setCurrentIndex(index);
-    if (QLineEdit* entry = entries_.value(key)) {
-        if (!query.isEmpty()) entry->setText(query);
-    }
-    const std::string target =
-        casu::web::web_player_url(key.toStdString(), query.toStdString(), url.toStdString());
-    QWidget* view = views_.value(key);
-    if (view) {
-#if defined(CASU_HAVE_WEBENGINE)
-        if (auto* qwe = qobject_cast<QWebEngineView*>(view))
-            qwe->load(QUrl(QString::fromStdString(target)));
-#else
-        if (auto* wv = static_cast<WebContainerWidget*>(view))
-            wv->load_url(QString::fromStdString(target));
-#endif
-    }
+    entries_.value(key)->setText(url.isEmpty() ? query : url);
+    QUrl destination(target);
+    if (destination.host() == QLatin1String("open.spotify.com") &&
+        destination.path().startsWith(QLatin1String("/embed/")))
+        destination.setPath(destination.path().mid(6));
+    const bool valid = destination.isValid() && !destination.host().isEmpty() &&
+        (destination.scheme() == QLatin1String("https") || destination.scheme() == QLatin1String("http"));
+    const bool launched = valid && QDesktopServices::openUrl(destination);
+    auto* message = tabs_->widget(index)->findChild<QLabel*>(QStringLiteral("browserStatus"));
+    if (message) message->setText(launched
+        ? QStringLiteral("Browserstart angefordert. Dort anmelden und geschützte Inhalte/DRM aktivieren.")
+        : QStringLiteral("Browserstart fehlgeschlagen. Einen aktuellen Edge, Chrome, Firefox oder Safari als Standardbrowser einrichten."));
 }
 
 bool WebPlayerTabs::play_video(const QString& url, const QString& title) {

@@ -6,8 +6,8 @@ options:
 settings:
   base:
     SWIFT_VERSION: "5.0"
-    CURRENT_PROJECT_VERSION: 7
-    MARKETING_VERSION: 7.0.0
+    CURRENT_PROJECT_VERSION: 8
+    MARKETING_VERSION: 7.0.1
 targets:
   MPCASU:
     type: application
@@ -18,8 +18,8 @@ targets:
       properties:
         CFBundleDisplayName: MPCASU
         MPCASUYouTubeAPIKey: $(YOUTUBE_API_KEY)
-        CFBundleShortVersionString: 7.0.0
-        CFBundleVersion: 7
+        CFBundleShortVersionString: 7.0.1
+        CFBundleVersion: 8
         UILaunchScreen: {}
         UISupportsDocumentBrowser: true
         UIFileSharingEnabled: true

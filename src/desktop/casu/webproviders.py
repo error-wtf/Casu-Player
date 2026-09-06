@@ -5,7 +5,7 @@
 These services (Spotify, Hearthis.at, Tidal, Netflix) only allow their DRM /
 authenticated audio/video to be played inside their own player with a normal
 account login. MPCASU integrates them by opening the official web player in a
-system Chromium browser at the relevant URL (home / search / item). No
+supported system browser at the relevant URL (home / search / item). No
 streams are scraped, downloaded or replayed.
 """
 from __future__ import annotations
@@ -14,6 +14,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import urllib.parse
 
 WEB_PLAYERS: dict[str, dict] = {
@@ -47,18 +48,37 @@ WEB_PLAYERS: dict[str, dict] = {
     },
 }
 
-# These providers require DRM and/or browser capabilities which the embedded
-# QtWebEngine build does not provide. Open them in the system browser.
+# Full web players need a maintained browser with its own DRM installation.
+# A Chromium executable alone does not establish Widevine availability.
 EXTERNAL_PROVIDERS = frozenset({"spotify", "tidal", "netflix"})
 
 
+def browser_command(url: str) -> list[str] | None:
+    """Prefer Chrome/Edge app windows; Firefox uses a normal browser window.
+
+    Keep the browser's regular profile, sandbox and component updater so login
+    and Widevine are managed by the browser. Do not spoof a browser identity.
+    """
+    if sys.platform == "darwin":
+        return ["/usr/bin/open", "-a", "Safari", url]
+    for name in ("google-chrome", "google-chrome-stable", "microsoft-edge",
+                 "microsoft-edge-stable", "firefox"):
+        binary = shutil.which(name)
+        if binary:
+            if name == "firefox":
+                return [binary, "--new-window", url]
+            return [binary, "--app=" + url]
+    return None
+
+
 def chromium_binary() -> str | None:
-    candidates = (shutil.which("chromium-browser"),
-                  shutil.which("chromium"),
-                  shutil.which("google-chrome"),
-                  "/snap/bin/chromium")
-    return next((candidate for candidate in candidates if candidate
-                 and os.path.exists(candidate)), None)
+    """Compatibility helper for callers requiring an installed Chromium family."""
+    for name in ("google-chrome", "google-chrome-stable", "microsoft-edge",
+                 "microsoft-edge-stable", "chromium-browser", "chromium"):
+        binary = shutil.which(name)
+        if binary:
+            return binary
+    return None
 
 
 _PROVIDER_DOMAINS = {
@@ -71,9 +91,15 @@ _PROVIDER_DOMAINS = {
 
 def provider_for_url(url: str) -> str | None:
     """Return the web-player provider a URL belongs to, or None."""
-    low = (url or "").lower()
+    try:
+        parsed = urllib.parse.urlsplit(url or "")
+        if parsed.scheme not in ("http", "https"):
+            return None
+        host = (parsed.hostname or "").lower().rstrip(".")
+    except ValueError:
+        return None
     for key, domain in _PROVIDER_DOMAINS.items():
-        if domain in low:
+        if host == domain or host.endswith("." + domain):
             return key
     return None
 
@@ -107,13 +133,22 @@ def web_player_url(provider: str, *, query: str = "", url: str = "") -> str:
 
 
 def open_web_player(provider: str, *, query: str = "", url: str = "") -> bool:
-    """Open a provider's official web player in a system Chromium browser."""
-    binary = chromium_binary()
-    if not binary:
-        return False
+    """Launch the official player. Success means launch, not verified playback."""
     target = web_player_url(provider, query=query, url=url)
     try:
-        subprocess.Popen([binary, target], stdout=subprocess.DEVNULL,
+        parsed = urllib.parse.urlsplit(target)
+        if parsed.scheme not in ("https", "http") or not parsed.hostname:
+            return False
+    except ValueError:
+        return False
+    # Old saved/embed links must reach the full Spotify web player.
+    if parsed.hostname == "open.spotify.com" and parsed.path.startswith("/embed/"):
+        target = urllib.parse.urlunsplit(parsed._replace(path=parsed.path[6:]))
+    command = browser_command(target)
+    if command is None:
+        return False
+    try:
+        subprocess.Popen(command, stdout=subprocess.DEVNULL,
                          stderr=subprocess.DEVNULL)
         return True
     except OSError:

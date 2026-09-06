@@ -1677,12 +1677,8 @@ public class MainActivity extends Activity implements PlayerEngine.Listener {
     }
 
     private void openProvider(String name, String url) {
-        if ("SPOTIFY".equals(name) || "NETFLIX".equals(name)) {
-            try {
-                startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(url)));
-            } catch (Exception e) {
-                toast(name + ": kein unterstützter Browser gefunden");
-            }
+        if (ProviderBrowser.requiresExternal(url)) {
+            ProviderBrowser.open(this, url);
             return;
         }
         Intent intent = new Intent(this, ProviderActivity.class);

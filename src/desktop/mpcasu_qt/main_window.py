@@ -3207,6 +3207,7 @@ class MainWindow(QMainWindow):
         self._center_stack.addWidget(self._sources_view)
         from mpcasu_qt.webplayers import WebPlayerTabs
         self._web_player_tabs = WebPlayerTabs()
+        self._web_player_tabs.browser_launched.connect(self._browser_launched)
         self._center_stack.addWidget(self._web_player_tabs)
         self._pages: list = []
         self._library_page = LibraryPage(self.media_library, self._thumbnail_dir,
@@ -4206,24 +4207,23 @@ class MainWindow(QMainWindow):
         self._topbar_title.setText(self._sources_view.MODES[mode]["title"])
         self._back_btn.show()
 
+    def _browser_launched(self, provider: str, ok: bool):
+        label = provider.upper()
+        message = (f"{label}: Browserstart angefordert — dort anmelden und DRM aktivieren"
+                   if ok else f"{label}: Browserstart fehlgeschlagen; Chrome, Edge oder Firefox installieren (macOS: Safari)")
+        self.status(message)
+        self.toast(message)
+
     def _open_web_player(self, provider: str, *, query: str = "", url: str = ""):
-        from casu.webproviders import EXTERNAL_PROVIDERS, WEB_PLAYERS, open_web_player
+        from casu.webproviders import EXTERNAL_PROVIDERS, WEB_PLAYERS, provider_for_url
         label = ("BROWSE" if provider == "browse"
                  else WEB_PLAYERS.get(provider, WEB_PLAYERS["spotify"])["label"])
-        if provider in EXTERNAL_PROVIDERS:
-            if open_web_player(provider, query=query, url=url):
-                self.status(f"{label} im Systembrowser geöffnet")
-                self.toast(f"{label} im Systembrowser geöffnet")
-            else:
-                self.status(f"{label}: Kein unterstützter Systembrowser gefunden")
-                self.toast(f"{label} konnte nicht geöffnet werden")
-            return
-        self._web_player_tabs.open(provider, query=query, url=url)
         self._center_stack.setCurrentWidget(self._web_player_tabs)
         self._topbar_title.setText(label)
         self._back_btn.show()
-        self.status(f"{label} Web Player (eingebettet) — dort mit deinem Account einloggen")
-        self.toast(f"{label} geöffnet im eingebetteten Browser")
+        self._web_player_tabs.open(provider, query=query, url=url)
+        if provider not in EXTERNAL_PROVIDERS and provider_for_url(url) not in EXTERNAL_PROVIDERS:
+            self.status(f"{label} geöffnet")
 
     def _show_player_page(self):
         self._center_stack.setCurrentIndex(0)
