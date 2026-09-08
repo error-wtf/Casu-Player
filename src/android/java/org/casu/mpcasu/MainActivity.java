@@ -422,7 +422,7 @@ public class MainActivity extends Activity implements PlayerEngine.Listener {
             icon.setGravity(Gravity.CENTER);
             TextView label = new TextView(this);
             label.setText(labels[i]);
-            label.setTextSize(9);
+            label.setTextSize(getResources().getConfiguration().smallestScreenWidthDp >= 600 ? 13 : 10);
             label.setGravity(Gravity.CENTER);
             tab.addView(icon);
             tab.addView(label);

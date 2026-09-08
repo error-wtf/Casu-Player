@@ -46,10 +46,14 @@ public final class IptvView extends LinearLayout {
         search=new EditText(activity);search.setSingleLine(true);search.setTextColor(Color.WHITE);search.setHintTextColor(Color.LTGRAY);search.setHint("Sender oder Gruppe suchen…");addView(search);
         status=label("M3U-Datei oder Playlist-URL laden",14);addView(status);
         list=new ListView(activity);list.setId(View.generateViewId());list.setChoiceMode(ListView.CHOICE_MODE_SINGLE);
-        list.setCacheColorHint(Color.TRANSPARENT);list.setSelector(android.R.drawable.list_selector_background);
+        list.setCacheColorHint(Color.TRANSPARENT);list.setSelector(new android.graphics.drawable.ColorDrawable(Color.TRANSPARENT));
         adapter=new ArrayAdapter<String>(activity,android.R.layout.simple_list_item_activated_1,new ArrayList<>()) {
             @Override public View getView(int pos,View old,ViewGroup parent) {
-                TextView row=(TextView)super.getView(pos,old,parent);row.setTextColor(Color.WHITE);row.setTextSize(18);row.setMinHeight(dp(60));row.setMaxLines(2);return row;
+                TextView row=(TextView)super.getView(pos,old,parent);row.setTextColor(Color.WHITE);
+                android.graphics.drawable.StateListDrawable background=new android.graphics.drawable.StateListDrawable();
+                background.addState(new int[]{android.R.attr.state_activated},new android.graphics.drawable.ColorDrawable(Color.rgb(38,51,68)));
+                background.addState(new int[]{},new android.graphics.drawable.ColorDrawable(Color.TRANSPARENT));
+                row.setBackground(background);row.setTextSize(18);row.setMinHeight(dp(60));row.setMaxLines(2);return row;
             }
         };
         list.setAdapter(adapter);addView(list,new LinearLayout.LayoutParams(-1,0,1));
@@ -67,7 +71,7 @@ public final class IptvView extends LinearLayout {
     private int dp(int n){return Math.round(n*getResources().getDisplayMetrics().density);}
     private TextView label(String text,int size){TextView v=new TextView(activity);v.setText(text);v.setTextSize(size);v.setTextColor(Color.WHITE);v.setPadding(4,4,4,4);return v;}
     private Button button(String text){Button b=new Button(activity);b.setText(text);b.setMinHeight(dp(48));return b;}
-    private void select(int pos){if(pos<0||pos>=visible.size())return;MediaItem item=visible.get(pos);selectedUrl=item.url;detail.setText(item.title+" · "+item.playlist);}
+    private void select(int pos){if(pos<0||pos>=visible.size())return;MediaItem item=visible.get(pos);list.setItemChecked(pos,true);selectedUrl=item.url;detail.setText(item.title+" · "+item.playlist);}
     private void activate(){for(MediaItem item:visible)if(item.url.equals(selectedUrl)){play.accept(MediaItem.fromJson(item.toJson()));return;}}
     private void updateGroups(){String selected=groups.getSelectedItem()==null?"Alle Gruppen":groups.getSelectedItem().toString();TreeSet<String> names=new TreeSet<>();for(MediaItem ch:channels)names.add(ch.playlist);List<String> items=new ArrayList<>();items.add("Alle Gruppen");items.addAll(names);groups.setAdapter(new ArrayAdapter<>(activity,android.R.layout.simple_spinner_dropdown_item,items));groups.setSelection(Math.max(0,items.indexOf(selected)));}
     private void filter(){
