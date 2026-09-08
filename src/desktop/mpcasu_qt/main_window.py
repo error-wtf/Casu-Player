@@ -2280,14 +2280,11 @@ class EpgPage(QFrame):
     def _now_next(self, channel):
         if self._guide is None:
             return ""
-        try:
-            programmes = self._guide.for_channel(getattr(channel, "tvg_id", "") or channel.name)
-        except Exception:  # noqa: BLE001
-            return ""
-        current = next((p for p in programmes if p.current), None) if programmes else None
-        if current is not None:
-            return f"{current.title}"
-        return ""
+        current, upcoming = self._guide.now_next(getattr(channel, "epg_id", "") or channel.name)
+        parts = []
+        if current is not None: parts.append(f"NOW · {current.title}")
+        if upcoming is not None: parts.append(f"NEXT · {upcoming.title}")
+        return "  |  ".join(parts)
 
     def _filter_channels(self, *_):
         self._channel_page = 0

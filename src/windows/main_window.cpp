@@ -2178,7 +2178,8 @@ void MainWindow::render_epg_cards() {
             const mpcasu::Programme* active = nullptr;
             const mpcasu::Programme* upcoming = nullptr;
             epg_guide_.now_next(key, now_ms, &active, &upcoming);
-            if (active) now_text = active->title;
+            if (active) now_text = QStringLiteral("NOW · ") + active->title;
+            if (upcoming) now_text += (now_text.isEmpty() ? QString() : QStringLiteral("  |  ")) + QStringLiteral("NEXT · ") + upcoming->title;
         }
         if (now_text.isEmpty()) now_text = ch.group;
         auto* meta = new QLabel(now_text, card);

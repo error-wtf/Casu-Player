@@ -21,3 +21,18 @@ def test_iptv_filters_and_pages_preserve_channel_identity():
     assert page._grid.count() == 0
     assert not page._next_channels.isEnabled()
     page.close()
+
+
+def test_iptv_programme_guide_uses_epg_id():
+    from datetime import datetime, timedelta, timezone
+    from casu.epg import EpgGuide, Programme
+    app = QApplication.instance() or QApplication([])
+    page = EpgPage()
+    now = datetime.now(timezone.utc)
+    page._guide = EpgGuide({}, (
+        Programme("news.id", now-timedelta(minutes=10), now+timedelta(minutes=10), "Current news"),
+        Programme("news.id", now+timedelta(minutes=10), now+timedelta(minutes=30), "Next news")))
+    label = page._now_next(StreamChannel("https://example.org/live", "Different display name", epg_id="news.id"))
+    assert "NOW · Current news" in label
+    assert "NEXT · Next news" in label
+    page.close()

@@ -75,7 +75,7 @@ public final class IptvView extends LinearLayout {
         visible.clear();List<String> labels=new ArrayList<>();int selected=-1;
         for(MediaItem item:channels){if(onlyFavorites&&!favorites.contains(item.url))continue;if(!group.equals("Alle Gruppen")&&!group.equals(item.playlist))continue;if(!(item.title+" "+item.playlist).toLowerCase(Locale.ROOT).contains(query))continue;
             if(item.url.equals(selectedUrl))selected=visible.size();visible.add(item);labels.add((favorites.contains(item.url)?"★ ":"")+item.title+"\n"+item.playlist);}
-        adapter.clear();adapter.addAll(labels);if(selected>=0)list.setItemChecked(selected,true);
+        adapter.clear();adapter.addAll(labels);if(!visible.isEmpty()){list.setSelection(Math.max(0,selected));list.setItemChecked(Math.max(0,selected),true);}
         status.setText(loading?"Playlist wird geladen…":visible.size()+" / "+channels.size()+" Sender");
         if(visible.isEmpty()){selectedUrl="";detail.setText(channels.isEmpty()?"M3U-Datei oder Playlist-URL laden":"Keine Sender für diesen Filter");}
         else if(selected<0)select(0);
