@@ -18,6 +18,8 @@ struct ContentView: View {
         TabView {
             playerView
                 .tabItem { Label("Player", systemImage: "play.circle") }
+            IPTVView()
+                .tabItem { Label("IPTV", systemImage: "tv") }
             libraryView
                 .tabItem { Label("Library", systemImage: "music.note.list") }
             searchView
@@ -25,6 +27,7 @@ struct ContentView: View {
             settingsView
                 .tabItem { Label("Settings", systemImage: "gearshape") }
         }
+        .buttonStyle(RemoteButtonStyle())
         .sheet(isPresented: $showingProvider) {
             if let url = providerURL { ProviderBrowserView(url: url).ignoresSafeArea() }
         }
@@ -89,7 +92,7 @@ struct ContentView: View {
                     Button(action: model.previous) { Label("Previous", systemImage: "backward.fill") }.labelStyle(.iconOnly)
                     Button(action: model.togglePlayback) {
                         Label(model.isPlaying ? "Pause" : "Play", systemImage: model.isPlaying ? "pause.fill" : "play.fill")
-                    }.buttonStyle(.borderedProminent).disabled(model.current == nil).accessibilityIdentifier("playback.toggle")
+                    }.disabled(model.current == nil).accessibilityIdentifier("playback.toggle")
                     Button(action: model.stop) { Label("Stop", systemImage: "stop.fill") }.labelStyle(.iconOnly)
                         .disabled(model.current == nil)
                     Button(action: model.advance) { Label("Next", systemImage: "forward.fill") }.labelStyle(.iconOnly)
@@ -101,7 +104,7 @@ struct ContentView: View {
                 Picker("Recording split", selection: $recording.mode) {
                     ForEach(RecordingSplitMode.allCases) { Text($0.label).tag($0) }
                 }
-                .pickerStyle(.menu)
+                .pickerStyle(.menu).remoteControlFocus()
                 .accessibilityIdentifier("recording.split-mode")
                 if recording.mode == .time {
                     Stepper("Every \(recording.intervalMinutes) minutes", value: $recording.intervalMinutes, in: 1...1440)
@@ -143,11 +146,11 @@ struct ContentView: View {
                 }
                 Picker("Search type", selection: $youtube.kind) {
                     ForEach(YouTubeSearchKind.allCases) { Text($0.rawValue).tag($0) }
-                }.pickerStyle(.segmented).accessibilityIdentifier("youtube.search-kind")
+                }.pickerStyle(.segmented).remoteControlFocus().accessibilityIdentifier("youtube.search-kind")
                 HStack {
                     TextField("YouTube search or media URL", text: $youtube.query)
-                        .textFieldStyle(.roundedBorder).onSubmit(youtube.search)
-                    Button("Search", action: youtube.search).buttonStyle(.borderedProminent)
+                        .textFieldStyle(.roundedBorder).remoteControlFocus().onSubmit(youtube.search)
+                    Button("Search", action: youtube.search)
                 }
                 if youtube.isLoading { ProgressView() }
                 if let error = youtube.error { Text(error).foregroundStyle(.red) }
@@ -206,7 +209,7 @@ struct ContentView: View {
         } label: {
             Label(name, systemImage: "safari").padding(.horizontal, 8).padding(.vertical, 6)
         }
-        .buttonStyle(.bordered)
+
         .accessibilityIdentifier("provider.\(name.lowercased())")
     }
 
@@ -216,10 +219,10 @@ struct ContentView: View {
                 Picker("Library section", selection: $library.section) {
                     ForEach(LibrarySection.allCases) { Text($0.rawValue).tag($0) }
                 }
-                .pickerStyle(.segmented)
+                .pickerStyle(.segmented).remoteControlFocus()
                 .accessibilityIdentifier("library.sections")
                 TextField("Search library", text: $library.search)
-                    .textFieldStyle(.roundedBorder)
+                    .textFieldStyle(.roundedBorder).remoteControlFocus()
                     .accessibilityIdentifier("library.search")
                 if library.authorizationDenied {
                     ContentUnavailableView("Media Library Access Required",

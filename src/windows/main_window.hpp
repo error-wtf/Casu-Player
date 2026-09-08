@@ -353,6 +353,12 @@ private:
     // epg page
     QLineEdit* epg_source_ = nullptr;
     QLabel* epg_status_ = nullptr;
+    QLineEdit* epg_search_ = nullptr;
+    QComboBox* epg_group_ = nullptr;
+    QLabel* epg_count_ = nullptr;
+    QPushButton* epg_previous_ = nullptr;
+    QPushButton* epg_next_ = nullptr;
+    int epg_page_ = 0;
     QGridLayout* epg_grid_ = nullptr;
     QHash<QObject*, QString> epg_card_urls_;
 

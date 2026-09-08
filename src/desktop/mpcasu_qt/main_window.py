@@ -2203,6 +2203,26 @@ class EpgPage(QFrame):
         self._status.setObjectName("NowPlayingMeta")
         outer.addWidget(self._status)
 
+        filters = QHBoxLayout()
+        self._channel_search = QLineEdit()
+        self._channel_search.setPlaceholderText("Search channels or groups…")
+        self._channel_group = QComboBox()
+        self._channel_group.addItem("All groups", "")
+        self._channel_count = QLabel()
+        self._channel_page = 0
+        self._previous_channels = QPushButton("Previous")
+        self._next_channels = QPushButton("Next")
+        filters.addWidget(self._channel_group)
+        filters.addWidget(self._channel_search, 1)
+        filters.addWidget(self._channel_count)
+        filters.addWidget(self._previous_channels)
+        filters.addWidget(self._next_channels)
+        outer.addLayout(filters)
+        self._channel_search.textChanged.connect(self._filter_channels)
+        self._channel_group.currentIndexChanged.connect(self._filter_channels)
+        self._previous_channels.clicked.connect(lambda: self._turn_channels(-1))
+        self._next_channels.clicked.connect(lambda: self._turn_channels(1))
+
         self._scroll = QScrollArea()
         self._scroll.setWidgetResizable(True)
         self._scroll.setFrameShape(QFrame.NoFrame)
@@ -2269,6 +2289,14 @@ class EpgPage(QFrame):
             return f"{current.title}"
         return ""
 
+    def _filter_channels(self, *_):
+        self._channel_page = 0
+        self._render()
+
+    def _turn_channels(self, direction):
+        self._channel_page = max(0, self._channel_page + direction)
+        self._render()
+
     def _render(self):
         while self._grid.count():
             item = self._grid.takeAt(0)
@@ -2277,7 +2305,26 @@ class EpgPage(QFrame):
                 widget.deleteLater()
         if self._catalog is None:
             return
-        for index, channel in enumerate(self._catalog.channels):
+        groups = sorted({getattr(ch, "group", "") or "Ungrouped" for ch in self._catalog.channels})
+        selected = self._channel_group.currentData() or ""
+        if groups != [self._channel_group.itemData(i) for i in range(1, self._channel_group.count())]:
+            self._channel_group.blockSignals(True)
+            self._channel_group.clear()
+            self._channel_group.addItem("All groups", "")
+            for group in groups: self._channel_group.addItem(group, group)
+            self._channel_group.setCurrentIndex(max(0, self._channel_group.findData(selected)))
+            self._channel_group.blockSignals(False)
+            selected = self._channel_group.currentData() or ""
+        query = self._channel_search.text().strip().casefold()
+        channels = [ch for ch in self._catalog.channels
+                    if (not selected or (getattr(ch, "group", "") or "Ungrouped") == selected)
+                    and (not query or query in (ch.name + " " + (getattr(ch, "group", "") or "")).casefold())]
+        self._channel_page = min(self._channel_page, max(0, (len(channels) - 1) // 100))
+        start = self._channel_page * 100
+        self._channel_count.setText(f"{len(channels)} channels · {self._channel_page + 1}/{max(1, (len(channels) + 99) // 100)}")
+        self._previous_channels.setEnabled(start > 0)
+        self._next_channels.setEnabled(start + 100 < len(channels))
+        for index, channel in enumerate(channels[start:start + 100]):
             card = QFrame()
             card.setObjectName("EpgChannel")
             card.setCursor(Qt.PointingHandCursor)
@@ -2285,7 +2332,7 @@ class EpgPage(QFrame):
             cl.setContentsMargins(12, 10, 12, 10)
             name = QLabel(channel.name)
             name.setObjectName("NowPlayingTitle")
-            name.setStyleSheet("font-size: 13px;")
+            name.setStyleSheet("font-size: 16px;")
             name.setWordWrap(True)
             cl.addWidget(name)
             now = self._now_next(channel)
@@ -2294,7 +2341,7 @@ class EpgPage(QFrame):
             meta.setWordWrap(True)
             cl.addWidget(meta)
             card.mousePressEvent = lambda event, ch=channel: self.channelActivated.emit(ch)
-            self._grid.addWidget(card, index // 3, index % 3)
+            self._grid.addWidget(card, index, 0)
 
 
 class AboutPage(QFrame):

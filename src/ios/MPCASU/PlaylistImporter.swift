@@ -3,6 +3,7 @@ import Foundation
 struct PlaylistEntry: Equatable {
     let title: String
     let url: URL
+    var group: String = ""
 }
 
 enum PlaylistImporter {
@@ -50,14 +51,21 @@ enum PlaylistImporter {
     static func parseM3U(_ text: String, relativeTo source: URL) throws -> [PlaylistEntry] {
         var entries: [PlaylistEntry] = []
         var pendingTitle: String?
+        var pendingGroup = ""
         for raw in text.components(separatedBy: .newlines) {
             let line = raw.trimmingCharacters(in: .whitespacesAndNewlines)
             if line.hasPrefix("#EXTINF:") {
                 pendingTitle = line.split(separator: ",", maxSplits: 1).last.map(String.init)
+                let pattern = #"(?i)group-title="([^"]*)""#
+                let input = line as NSString
+                if let regex = try? NSRegularExpression(pattern: pattern),
+                   let match = regex.firstMatch(in: line, range: NSRange(location: 0, length: input.length)) {
+                    pendingGroup = input.substring(with: match.range(at: 1))
+                } else { pendingGroup = "" }
             } else if !line.isEmpty && !line.hasPrefix("#") {
                 guard entries.count < maximumEntries else { throw PlaylistError.entryLimitReached }
                 let url = URL(string: line, relativeTo: source.deletingLastPathComponent())?.absoluteURL
-                if let url { entries.append(PlaylistEntry(title: pendingTitle ?? url.deletingPathExtension().lastPathComponent, url: url)) }
+                if let url { entries.append(PlaylistEntry(title: pendingTitle ?? url.deletingPathExtension().lastPathComponent, url: url, group: pendingGroup)) }
                 pendingTitle = nil
             }
         }

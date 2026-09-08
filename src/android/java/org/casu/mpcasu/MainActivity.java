@@ -69,7 +69,7 @@ public class MainActivity extends Activity implements PlayerEngine.Listener {
     private static final int BORDER = Color.parseColor("#262b31");
 
     private static final int TAB_PLAY = 0, TAB_QUEUE = 1, TAB_LIBRARY = 2,
-            TAB_WEB = 3, TAB_SETTINGS = 4;
+            TAB_WEB = 3, TAB_SETTINGS = 4, TAB_IPTV = 5;
 
     private static final String[] PROVIDER_NAMES = {"SPOTIFY", "HEARTHIS", "TIDAL", "NETFLIX", "BROWSE"};
     private static final String[] PROVIDER_URLS = {
@@ -85,8 +85,11 @@ public class MainActivity extends Activity implements PlayerEngine.Listener {
     private FrameLayout root;
     private FrameLayout content;
     private LinearLayout bottomNav;
-    private final TextView[] navTabs = new TextView[5];
+    private final TextView[] navTabs = new TextView[6];
     private int activeTab = TAB_PLAY;
+    private RemoteFocus remoteFocus;
+    private IptvView iptvView;
+    private static final int REQUEST_IPTV = 25;
 
     // now playing
     private FrameLayout stage;
@@ -268,6 +271,7 @@ public class MainActivity extends Activity implements PlayerEngine.Listener {
 
         buildUi();
         setContentView(root);
+        remoteFocus = RemoteFocus.install(this);
 
         handleIntent(getIntent());
     }
@@ -358,6 +362,20 @@ public class MainActivity extends Activity implements PlayerEngine.Listener {
 
     // ================================================================== UI BUILD
 
+    @Override public void onBackPressed() {
+        if (activeTab != TAB_PLAY) { showTab(TAB_PLAY); bottomNav.getChildAt(TAB_PLAY).requestFocus(); return; }
+        super.onBackPressed();
+    }
+
+    @Override public boolean dispatchGenericMotionEvent(android.view.MotionEvent event) {
+        if (remoteFocus != null) remoteFocus.pointer(event);
+        return super.dispatchGenericMotionEvent(event);
+    }
+    @Override public boolean dispatchKeyEvent(android.view.KeyEvent event) {
+        if (remoteFocus != null) remoteFocus.keyboard();
+        return super.dispatchKeyEvent(event);
+    }
+
     private void buildUi() {
         root = new FrameLayout(this);
         root.setBackgroundColor(BG);
@@ -371,6 +389,14 @@ public class MainActivity extends Activity implements PlayerEngine.Listener {
         content.addView(buildLibraryView());
         content.addView(buildWebView());
         content.addView(buildSettingsView());
+        iptvView = new IptvView(this, item -> withEngine(() -> {
+            engine.openExternal(item, true, 0); showTab(TAB_PLAY);
+        }), () -> {
+            Intent picker = new Intent(Intent.ACTION_GET_CONTENT).setType("*/*").addCategory(Intent.CATEGORY_OPENABLE);
+            try { startActivityForResult(picker, REQUEST_IPTV); }
+            catch (android.content.ActivityNotFoundException e) { toast("Kein Dateimanager vorhanden. Bitte Playlist-URL verwenden."); }
+        });
+        content.addView(iptvView);
 
         bottomNav = buildBottomNav();
         root.addView(bottomNav, new FrameLayout.LayoutParams(
@@ -384,9 +410,9 @@ public class MainActivity extends Activity implements PlayerEngine.Listener {
         nav.setOrientation(LinearLayout.HORIZONTAL);
         nav.setBackgroundColor(Color.parseColor("#0e1014"));
         nav.setGravity(Gravity.CENTER);
-        String[] symbols = {"▶", "☰", "▣", "∿", "⚙"};
-        String[] labels = {"PLAY", "QUEUE", "LIBRARY", "WEB", "SETUP"};
-        for (int i = 0; i < 5; i++) {
+        String[] symbols = {"▶", "☰", "▣", "∿", "⚙", "▦"};
+        String[] labels = {"PLAY", "QUEUE", "LIBRARY", "WEB", "SETUP", "IPTV"};
+        for (int i = 0; i < labels.length; i++) {
             LinearLayout tab = new LinearLayout(this);
             tab.setOrientation(LinearLayout.VERTICAL);
             tab.setGravity(Gravity.CENTER);
@@ -404,7 +430,8 @@ public class MainActivity extends Activity implements PlayerEngine.Listener {
                     0, ViewGroup.LayoutParams.MATCH_PARENT, 1f);
             tab.setLayoutParams(params);
             final int tabIndex = i;
-            tab.setOnClickListener(v -> showTab(tabIndex));
+            tab.setContentDescription(labels[i]);
+            tab.setOnClickListener(v -> { showTab(tabIndex); content.getChildAt(tabIndex).requestFocus(View.FOCUS_FORWARD); });
             nav.addView(tab);
             navTabs[i] = icon;
         }
@@ -2710,6 +2737,7 @@ public class MainActivity extends Activity implements PlayerEngine.Listener {
             }
         }
         if (uris.isEmpty()) return;
+        if (requestCode == REQUEST_IPTV) { iptvView.load(uris.get(0).toString()); return; }
         if (requestCode == REQUEST_OPEN_MEDIA) {
             List<MediaItem> items = new ArrayList<>();
             for (Uri uri : uris) {

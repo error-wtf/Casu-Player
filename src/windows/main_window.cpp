@@ -2018,6 +2018,18 @@ void MainWindow::build_epg_page() {
     epg_status_->setObjectName("NowPlayingMeta");
     outer->addWidget(epg_status_);
 
+    auto* filters = new QHBoxLayout();
+    epg_group_ = new QComboBox(page); epg_group_->addItem("All groups", "");
+    epg_search_ = new QLineEdit(page); epg_search_->setPlaceholderText("Search channels or groups…");
+    epg_count_ = new QLabel(page);
+    epg_previous_ = new QPushButton("Previous", page);
+    epg_next_ = new QPushButton("Next", page);
+    filters->addWidget(epg_group_); filters->addWidget(epg_search_, 1); filters->addWidget(epg_count_);
+    filters->addWidget(epg_previous_); filters->addWidget(epg_next_); outer->addLayout(filters);
+    connect(epg_search_, &QLineEdit::textChanged, this, [this] { epg_page_=0; render_epg_cards(); });
+    connect(epg_group_, &QComboBox::currentIndexChanged, this, [this] { epg_page_=0; render_epg_cards(); });
+    connect(epg_previous_, &QPushButton::clicked, this, [this] { epg_page_=qMax(0, epg_page_-1); render_epg_cards(); });
+    connect(epg_next_, &QPushButton::clicked, this, [this] { ++epg_page_; render_epg_cards(); });
     auto* scroll = new QScrollArea(page);
     scroll->setWidgetResizable(true);
     scroll->setFrameShape(QFrame::NoFrame);
@@ -2128,7 +2140,26 @@ void MainWindow::render_epg_cards() {
         delete item;
     }
     const qint64 now_ms = QDateTime::currentMSecsSinceEpoch();
-    for (int index = 0; index < epg_.channels.size(); ++index) {
+    QStringList groups;
+    for (const auto& ch : epg_.channels) { const QString g=ch.group.isEmpty()?QStringLiteral("Ungrouped"):ch.group; if (!groups.contains(g)) groups.append(g); }
+    groups.sort();
+    QString selected=epg_group_->currentData().toString();
+    epg_group_->blockSignals(true); epg_group_->clear(); epg_group_->addItem("All groups", "");
+    for (const auto& group:groups) epg_group_->addItem(group,group);
+    epg_group_->setCurrentIndex(qMax(0,epg_group_->findData(selected))); epg_group_->blockSignals(false);
+    selected=epg_group_->currentData().toString();
+    QVector<int> matches;
+    for (int i=0;i<epg_.channels.size();++i) {
+        const auto& ch=epg_.channels[i]; const QString group=ch.group.isEmpty()?QStringLiteral("Ungrouped"):ch.group;
+        if ((!selected.isEmpty() && group!=selected) || !(ch.name+" "+group).contains(epg_search_->text().trimmed(),Qt::CaseInsensitive)) continue;
+        matches.append(i);
+    }
+    epg_page_=qMin(epg_page_,qMax(0,(int(matches.size())-1)/100));
+    const int start=epg_page_*100, end=qMin(start+100,int(matches.size()));
+    epg_count_->setText(QStringLiteral("%1 channels · %2/%3").arg(matches.size()).arg(epg_page_+1).arg(qMax(1,(int(matches.size())+99)/100)));
+    epg_previous_->setEnabled(start>0);epg_next_->setEnabled(end<matches.size());
+    for (int visible=start;visible<end;++visible) {
+        const int index=matches[visible];
         const mpcasu::StreamChannel& ch = epg_.channels[index];
         auto* card = new QFrame(epg_grid_->parentWidget());
         card->setObjectName("EpgChannel");
@@ -2137,7 +2168,7 @@ void MainWindow::render_epg_cards() {
         cl->setContentsMargins(12, 10, 12, 10);
         auto* name = new QLabel(ch.name, card);
         name->setObjectName("NowPlayingTitle");
-        name->setStyleSheet(QStringLiteral("font-size: 13px;"));
+        name->setStyleSheet(QStringLiteral("font-size: 16px;"));
         name->setWordWrap(true);
         cl->addWidget(name);
         QString now_text;
@@ -2157,7 +2188,7 @@ void MainWindow::render_epg_cards() {
         const QString url = ch.url;
         card->installEventFilter(this);
         epg_card_urls_[card] = url;
-        epg_grid_->addWidget(card, index / 3, index % 3);
+        epg_grid_->addWidget(card, visible-start, 0);
     }
 }
 

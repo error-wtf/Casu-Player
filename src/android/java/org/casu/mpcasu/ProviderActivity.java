@@ -62,6 +62,7 @@ public final class ProviderActivity extends Activity {
     private HorizontalScrollView tabStripScroll;
     private EditText urlInput;
     private WebView active;
+    private RemoteFocus remoteFocus;
     private String startUrl;
     private String providerName;
     private ValueCallback<Uri[]> fileCallback;
@@ -95,8 +96,18 @@ public final class ProviderActivity extends Activity {
         root.addView(tabHost, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
         setContentView(root);
+        remoteFocus = RemoteFocus.install(this);
 
         newTab(startUrl);
+    }
+
+    @Override public boolean dispatchGenericMotionEvent(android.view.MotionEvent event) {
+        if (remoteFocus != null) remoteFocus.pointer(event);
+        return super.dispatchGenericMotionEvent(event);
+    }
+    @Override public boolean dispatchKeyEvent(android.view.KeyEvent event) {
+        if (remoteFocus != null) remoteFocus.keyboard();
+        return super.dispatchKeyEvent(event);
     }
 
     // ------------------------------------------------------------------ toolbar

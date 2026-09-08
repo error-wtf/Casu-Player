@@ -25,3 +25,10 @@ Die verbindlichen Download-Prüfsummen stehen in `SHA256SUMS`.
 - Android and iOS read MP3 title, artist, album and embedded covers, display Library thumbnails and playback artwork, and prevent stale artwork after track changes.
 - iOS keeps imported documents readable after relaunch, preserves queue metadata, supports additional playlist formats and exposes Library queue actions.
 - The product version remains 7.0.0; in-app provider browsing remains enabled.
+
+## IPTV and mobile remote navigation
+
+- Desktop IPTV adds channel search, group filters and 100-channel pages with readable channel rows.
+- Web IPTV adds group filters and searchable, paginated programme guides; channel playlists work without XMLTV IDs.
+- Android and iOS add dedicated, persistent IPTV catalogs with M3U file/URL import, groups, search and favorites.
+- Mobile controls show distinct remote-focus and mouse-hover highlights. Android adds TV launcher support and Back navigation to the player. Desktop remote navigation is unchanged.

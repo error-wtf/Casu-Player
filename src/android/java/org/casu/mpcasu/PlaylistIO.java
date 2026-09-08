@@ -29,9 +29,14 @@ public final class PlaylistIO {
     public static final class Entry {
         public final String url;
         public final String title;
+        public final String group;
         public Entry(String url, String title) {
+            this(url, title, "");
+        }
+        public Entry(String url, String title, String group) {
             this.url = url;
             this.title = title == null ? "" : title;
+            this.group = group == null ? "" : group;
         }
     }
 
@@ -99,7 +104,7 @@ public final class PlaylistIO {
         String base = baseOf(location);
         for (int i = 0; i < playlist.items.size(); i++) {
             Entry entry = playlist.items.get(i);
-            playlist.items.set(i, new Entry(resolve(entry.url, base), entry.title));
+            playlist.items.set(i, new Entry(resolve(entry.url, base), entry.title, entry.group));
         }
         return playlist;
     }
@@ -109,16 +114,19 @@ public final class PlaylistIO {
     private static Playlist parseM3u(String text) {
         Playlist out = new Playlist();
         String pending = null;
+        String group = "";
         for (String raw : text.split("\\r?\\n")) {
             String line = cleanEntry(raw);
             if (line.isEmpty()) continue;
             if (line.startsWith("#EXTINF:")) {
+                Matcher groupMatch = Pattern.compile("(?i)group-title=\"([^\"]*)\"").matcher(line);
+                group = groupMatch.find() ? groupMatch.group(1) : "";
                 int comma = line.indexOf(',');
                 pending = comma >= 0 ? line.substring(comma + 1).trim() : null;
                 continue;
             }
             if (line.startsWith("#")) continue;
-            out.items.add(new Entry(line, pending));
+            out.items.add(new Entry(line, pending, group));
             pending = null;
         }
         return out;
