@@ -15,6 +15,7 @@
     <application
         android:name=".MpcasuApp"
         android:label="MPCASU"
+        android:banner="@drawable/tv_banner"
         android:icon="@mipmap/ic_launcher"
         android:roundIcon="@mipmap/ic_launcher_round"
         android:theme="@style/Theme.Casu"

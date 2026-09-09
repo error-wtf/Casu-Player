@@ -32,3 +32,10 @@ Die verbindlichen Download-Prüfsummen stehen in `SHA256SUMS`.
 - Web IPTV adds group filters and searchable, paginated programme guides; channel playlists work without XMLTV IDs.
 - Android and iOS add dedicated, persistent IPTV catalogs with M3U file/URL import, groups, search and favorites.
 - Mobile controls show distinct remote-focus and mouse-hover highlights. Android adds TV launcher support and Back navigation to the player. Desktop remote navigation is unchanged.
+
+
+## Android / Fire TV installation compatibility
+
+The refreshed 7.0.0 APK uses internal versionCode 70001, minSdk 21 (Android 5.0+), targetSdk 34 and ARMv7, ARM64, x86 and x86_64 native libraries. Fire OS 5 (API 22) is included. Release signing preserves the existing certificate and enables both v1/JAR and v2 signatures. Core library desugaring (desugar_jdk_libs 2.1.5) supplies Java date/time and collection APIs on older Android versions. Audio focus, service/widget lifecycle and notification actions use compatible APIs. A TV launcher banner is included.
+
+Vega OS uses VPKG, not Android APK, and is outside this APK compatibility range. Provider playback still depends on the device WebView, DRM support and service requirements.

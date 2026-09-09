@@ -75,7 +75,7 @@ public final class PlaybackService extends Service {
                 case ACTION_TOGGLE: engine.playPause(); break;
                 case ACTION_STOP:
                     engine.stop();
-                    stopForeground(STOP_FOREGROUND_REMOVE);
+                    stopForeground(true);
                     stopSelf();
                     return START_NOT_STICKY;
                 case ACTION_SEEK: {
@@ -274,12 +274,13 @@ public final class PlaybackService extends Service {
                 .setOnlyAlertOnce(true)
                 .setVisibility(Notification.VISIBILITY_PUBLIC)
                 .addAction(new Notification.Action.Builder(
-                        null, "⏮", servicePendingIntent(ACTION_PREV, 2)).build())
+                        android.R.drawable.ic_media_previous, "⏮", servicePendingIntent(ACTION_PREV, 2)).build())
                 .addAction(new Notification.Action.Builder(
-                        null, playingNow ? "❚❚" : "▶",
+                        playingNow ? android.R.drawable.ic_media_pause : android.R.drawable.ic_media_play,
+                        playingNow ? "❚❚" : "▶",
                         servicePendingIntent(ACTION_TOGGLE, 3)).build())
                 .addAction(new Notification.Action.Builder(
-                        null, "⏭", servicePendingIntent(ACTION_NEXT, 4)).build());
+                        android.R.drawable.ic_media_next, "⏭", servicePendingIntent(ACTION_NEXT, 4)).build());
         if (session != null) {
             builder.setStyle(new Notification.MediaStyle()
                     .setMediaSession(session.getSessionToken()));

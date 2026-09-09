@@ -89,7 +89,14 @@ public final class MediaTranscoder {
                 if (size < 0) break;
                 Integer targetTrack = tracks.get(sourceTrack);
                 if (targetTrack != null) {
-                    info.set(0, size, Math.max(0, ex.getSampleTime()), ex.getSampleFlags());
+                    int sampleFlags = ex.getSampleFlags();
+                    if ((sampleFlags & MediaExtractor.SAMPLE_FLAG_ENCRYPTED) != 0)
+                        throw new IllegalStateException("Verschlüsselte Medien können nicht umgepackt werden");
+                    int bufferFlags = (sampleFlags & MediaExtractor.SAMPLE_FLAG_SYNC) != 0
+                            ? MediaCodec.BUFFER_FLAG_KEY_FRAME : 0;
+                    if ((sampleFlags & MediaExtractor.SAMPLE_FLAG_PARTIAL_FRAME) != 0)
+                        bufferFlags |= MediaCodec.BUFFER_FLAG_PARTIAL_FRAME;
+                    info.set(0, size, Math.max(0, ex.getSampleTime()), bufferFlags);
                     mux.writeSampleData(targetTrack, data, info);
                     totalBytes += size;
                     lastReport = report(lastReport, info.presentationTimeUs / 1_000_000L);

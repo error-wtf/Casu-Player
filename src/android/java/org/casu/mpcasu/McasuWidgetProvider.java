@@ -41,7 +41,8 @@ public class McasuWidgetProvider extends AppWidgetProvider {
                 Intent start = new Intent(context, PlaybackService.class)
                         .setAction(serviceAction)
                         .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-                context.startForegroundService(start);
+                if (android.os.Build.VERSION.SDK_INT >= 26) context.startForegroundService(start);
+                else context.startService(start);
                 return;
             }
             if (ACTION_PREV.equals(action)) engine.previous();

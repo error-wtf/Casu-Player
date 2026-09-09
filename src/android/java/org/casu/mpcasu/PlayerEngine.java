@@ -461,7 +461,7 @@ public final class PlayerEngine implements
     }
 
     private void applyRatePlayer() {
-        if (player == null) return;
+        if (player == null || android.os.Build.VERSION.SDK_INT < 23) return;
         try {
             PlaybackParams params = new PlaybackParams();
             params.setSpeed(rate);
@@ -933,6 +933,11 @@ public final class PlayerEngine implements
     private void requestFocus() {
         if (hasFocus || audio == null) return;
         try {
+            if (android.os.Build.VERSION.SDK_INT < 26) {
+                hasFocus = audio.requestAudioFocus(this, AudioManager.STREAM_MUSIC,
+                        AudioManager.AUDIOFOCUS_GAIN) == AudioManager.AUDIOFOCUS_REQUEST_GRANTED;
+                return;
+            }
             if (focusRequest == null) {
                 focusRequest = new AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
                         .setAudioAttributes(new AudioAttributes.Builder()
@@ -947,8 +952,12 @@ public final class PlayerEngine implements
     }
 
     private void abandonFocus() {
-        if (focusRequest != null && audio != null) {
-            try { audio.abandonAudioFocusRequest(focusRequest); } catch (Exception ignored) {}
+        if (audio != null) {
+            try {
+                if (android.os.Build.VERSION.SDK_INT >= 26) {
+                    if (focusRequest != null) audio.abandonAudioFocusRequest(focusRequest);
+                } else audio.abandonAudioFocus(this);
+            } catch (Exception ignored) {}
         }
         hasFocus = false;
     }
