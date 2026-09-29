@@ -321,10 +321,14 @@ class LibraryPage(QFrame):
         self._groups_list.clear()
         self._playlist_files.clear()
         folders = list(self._settings_store.load().watched_folders) if self._settings_store else []
+        # v7.8: NEVER fall back to the whole home directory — rglob over ~130k
+        # entries froze the UI thread for seconds ("playlist click lag").
+        # Default to the XDG music dir instead (exists on every desktop).
         if not folders:
-            folders = [str(Path.home())]
+            music = Path.home() / "Music"
+            folders = [str(music) if music.is_dir() else str(Path.cwd())]
         data = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local/share")) / "mpcasu/youtube-playlists"
-        candidates = list(Path.home().glob("*"))
+        candidates: list = []
         for folder in [*folders, str(data)]:
             try:
                 candidates.extend(Path(folder).expanduser().rglob("*"))

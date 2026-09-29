@@ -360,7 +360,7 @@ class Sidebar(QFrame):
 
         layout.addStretch()
 
-        version = QLabel(f"MPCASU {_CASU_APP_VERSION}")
+        version = QLabel(_CASU_APP_VERSION)
         version.setObjectName("NowPlayingMeta")
         version.setContentsMargins(16, 8, 16, 8)
         version.setAlignment(Qt.AlignLeft | Qt.AlignBottom)
@@ -1264,7 +1264,7 @@ class MainWindow(QMainWindow):
 
         status_bar = QStatusBar()
         status_bar.setObjectName("StatusBar")
-        self._status_left = QLabel(f"MPCASU {_CASU_APP_VERSION}")
+        self._status_left = QLabel(_CASU_APP_VERSION)
         self._status_left.setObjectName("StatusText")
         self._status_left.setStyleSheet(f"color: {PALETTE.text_muted};")
         status_bar.addWidget(self._status_left)
@@ -1272,11 +1272,31 @@ class MainWindow(QMainWindow):
         self._status_center.setObjectName("StatusText")
         self._status_center.setStyleSheet(f"color: {PALETTE.text_faint};")
         status_bar.addWidget(self._status_center)
-        self._status_right = QLabel("CPU/RAM telemetry unavailable")
+        self._status_right = QLabel("…")
         self._status_right.setObjectName("StatusText")
         self._status_right.setStyleSheet(f"color: {PALETTE.text_faint};")
         status_bar.addPermanentWidget(self._status_right)
         self.setStatusBar(status_bar)
+        # v7.8: live CPU/RAM telemetry (psutil, optional) — replaces the
+        # permanently misleading "telemetry unavailable" placeholder.
+        try:
+            import psutil
+            self._proc = psutil.Process()
+            self._telemetry_timer = QTimer(self)
+            self._telemetry_timer.timeout.connect(self._update_telemetry)
+            self._telemetry_timer.start(2000)
+            self._update_telemetry()
+        except ImportError:
+            self._status_right.setText("")  # no psutil → hide instead of lying
+
+    def _update_telemetry(self):
+        try:
+            with self._proc.oneshot():
+                cpu = self._proc.cpu_percent(interval=None)
+                rss = self._proc.memory_info().rss / (1024 * 1024)
+            self._status_right.setText(f"CPU {cpu:.0f}% · RAM {rss:.0f} MiB")
+        except Exception:
+            self._status_right.setText("")
 
     def _setup_shortcuts(self):
         space = QAction("Play/Pause", self)
