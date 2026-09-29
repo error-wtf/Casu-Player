@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import math
 import sqlite3
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -54,14 +55,64 @@ class MediaBookmark:
     label: str
 
 
+class _LockedConnection:
+    """Proxy that serializes every statement on the shared sqlite connection."""
+
+    def __init__(self, connection, lock):
+        self._connection = connection
+        self._lock = lock
+
+    def __getattr__(self, name):
+        attribute = getattr(self._connection, name)
+        if callable(attribute):
+            def locked(*args, **kwargs):
+                with self._lock:
+                    return attribute(*args, **kwargs)
+            return locked
+        return attribute
+
+    def __enter__(self):
+        self._lock.acquire()
+        try:
+            return self._connection.__enter__()
+        except BaseException:
+            self._lock.release()
+            raise
+
+    def __exit__(self, exc_type, exc, tb):
+        try:
+            return self._connection.__exit__(exc_type, exc, tb)
+        finally:
+            self._lock.release()
+
+    # Direct attributes used heavily in hot paths (rows, lastrowid)
+    @property
+    def row_factory(self):
+        return self._connection.row_factory
+
+    @row_factory.setter
+    def row_factory(self, value):
+        self._connection.row_factory = value
+
+    @property
+    def total_changes(self):
+        return self._connection.total_changes
+
+
+
 class MediaLibrary:
     def __init__(self, path: str | Path):
         self.path = Path(path).expanduser().resolve()
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.connection = sqlite3.connect(self.path, check_same_thread=False)
-        self.connection.row_factory = sqlite3.Row
-        self.connection.execute("PRAGMA foreign_keys=ON")
-        self.connection.execute("PRAGMA journal_mode=WAL")
+        # v7.8: the UI thread and the library scan thread share one connection
+        # (check_same_thread=False); serialize every access through this lock
+        # so sqlite never sees interleaved statements from both threads.
+        self._connection_lock = threading.RLock()
+        raw_connection = sqlite3.connect(self.path, check_same_thread=False)
+        raw_connection.row_factory = sqlite3.Row
+        raw_connection.execute("PRAGMA foreign_keys=ON")
+        raw_connection.execute("PRAGMA journal_mode=WAL")
+        self.connection = _LockedConnection(raw_connection, self._connection_lock)
         self.connection.executescript("""
             CREATE TABLE IF NOT EXISTS media (
                 path TEXT PRIMARY KEY,
@@ -105,12 +156,37 @@ class MediaLibrary:
             "subtitle_track": "INTEGER",
             "audio_delay_ms": "REAL NOT NULL DEFAULT 0",
             "subtitle_delay_ms": "REAL NOT NULL DEFAULT 0",
+            "search_title": "TEXT NOT NULL DEFAULT ''",
+            "search_artist": "TEXT NOT NULL DEFAULT ''",
+            "search_album": "TEXT NOT NULL DEFAULT ''",
         }
         for column, declaration in migrations.items():
             if column not in existing:
                 self.connection.execute(
                     f"ALTER TABLE media ADD COLUMN {column} {declaration}"
                 )
+        # v7.8: fast search columns — backfill from stored metadata, then
+        # keep them indexed. Falls back gracefully when json_extract is
+        # unavailable on ancient sqlite builds.
+        for field, column in (("title", "search_title"),
+                              ("artist", "search_artist"),
+                              ("album", "search_album")):
+            try:
+                self.connection.execute(
+                    f"UPDATE media SET {column}=LOWER(json_extract(metadata_json,'$.{field}')) "
+                    f"WHERE {column}='' AND json_extract(metadata_json,'$.{field}') IS NOT NULL"
+                )
+            except sqlite3.OperationalError:
+                pass
+        try:
+            self.connection.execute(
+                "CREATE INDEX IF NOT EXISTS media_search_title ON media(search_title)")
+            self.connection.execute(
+                "CREATE INDEX IF NOT EXISTS media_search_artist ON media(search_artist)")
+            self.connection.execute(
+                "CREATE INDEX IF NOT EXISTS media_search_album ON media(search_album)")
+        except sqlite3.OperationalError:
+            pass
         self.connection.commit()
 
     def upsert(self, path: str | Path, *, duration_seconds: float | None = None,
@@ -136,15 +212,24 @@ class MediaLibrary:
             raise ValueError("media metadata must be finite JSON") from exc
         if len(values.encode("utf-8")) > MAX_LIBRARY_METADATA_BYTES:
             raise ValueError("media metadata exceeds its 1 MiB safety limit")
+        meta = metadata or {}
+        st_title = str(meta.get("title") or "").strip().casefold()
+        st_artist = str(meta.get("artist") or "").strip().casefold()
+        st_album = str(meta.get("album") or "").strip().casefold()
         self.connection.execute("""
-            INSERT INTO media(path,size_bytes,modified_ns,duration_seconds,metadata_json,last_seen_ns)
-            VALUES(?,?,?,?,?,?)
+            INSERT INTO media(path,size_bytes,modified_ns,duration_seconds,metadata_json,last_seen_ns,
+                              search_title,search_artist,search_album)
+            VALUES(?,?,?,?,?,?,?,?,?)
             ON CONFLICT(path) DO UPDATE SET
               size_bytes=excluded.size_bytes, modified_ns=excluded.modified_ns,
               duration_seconds=COALESCE(excluded.duration_seconds,media.duration_seconds),
               metadata_json=CASE WHEN excluded.metadata_json='{}' THEN media.metadata_json ELSE excluded.metadata_json END,
-              last_seen_ns=excluded.last_seen_ns
-        """, (str(source), stat.st_size, stat.st_mtime_ns, duration_seconds, values, now))
+              last_seen_ns=excluded.last_seen_ns,
+              search_title=CASE WHEN excluded.search_title!='' THEN excluded.search_title ELSE media.search_title END,
+              search_artist=CASE WHEN excluded.search_artist!='' THEN excluded.search_artist ELSE media.search_artist END,
+              search_album=CASE WHEN excluded.search_album!='' THEN excluded.search_album ELSE media.search_album END
+        """, (str(source), stat.st_size, stat.st_mtime_ns, duration_seconds, values, now,
+              st_title, st_artist, st_album))
         item = self.get(source)
         assert item is not None
         return item
@@ -182,9 +267,16 @@ class MediaLibrary:
         if favorites_only:
             clauses.append("favorite=1")
         if needle:
-            clauses.append("(LOWER(path) LIKE ? ESCAPE '\\' OR LOWER(metadata_json) LIKE ? ESCAPE '\\')")
+            # v7.8: indexed search columns (title/artist/album) instead of a
+            # full-table scan over the metadata JSON blob; path stays as a
+            # LIKE for filename matching.
+            clauses.append(
+                "(LOWER(path) LIKE ? ESCAPE '\\'"
+                " OR search_title LIKE ? ESCAPE '\\'"
+                " OR search_artist LIKE ? ESCAPE '\\'"
+                " OR search_album LIKE ? ESCAPE '\\')")
             escaped = needle.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-            parameters.extend((f"%{escaped}%", f"%{escaped}%"))
+            parameters.extend((f"%{escaped}%",) * 4)
         where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
         parameters.append(maximum)
         rows = self.connection.execute(

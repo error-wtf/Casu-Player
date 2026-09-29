@@ -81,10 +81,20 @@ def _parse_filename(path: Path, result: dict) -> None:
         result.setdefault("track", match.group(1))
         result["title"] = match.group(2).strip()
 
+    # v7.8: folder-derived album/artist only when the folder names look
+    # intentional (Artist/Album structure). Previously /tmp/x/song.mp3 set
+    # album="tmp" — noise in every library view.
+    _GENERIC_DIRS = {"tmp", "temp", "var", "home", "users", "desktop",
+                     "downloads", "documents", "music", "videos", "media",
+                     "files", "storage", "sdcard", "root"}
     if parts:
-        result.setdefault("album", parts[-1].strip())
+        parent = parts[-1].strip()
+        if parent.casefold() not in _GENERIC_DIRS:
+            result.setdefault("album", parent)
     if len(parts) >= 2:
-        result.setdefault("artist", parts[-2].strip())
+        grandparent = parts[-2].strip()
+        if grandparent.casefold() not in _GENERIC_DIRS:
+            result.setdefault("artist", grandparent)
 
     year = _YEAR_END.search(str(result.get("title", "")))
     if year:

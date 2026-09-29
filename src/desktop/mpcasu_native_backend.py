@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import binascii
 import ctypes
+import queue
 import json
 import struct
 import sys
@@ -40,8 +41,24 @@ MAX_AUDIO_LATENCY_SECONDS = 60.0
 MAX_AUDIO_DEVICES = 128
 
 
+_PW_DEVICE_CACHE: tuple[float, tuple[AudioDeviceDescriptor, ...]] | None = None
+_PW_DEVICE_CACHE_TTL = 5.0  # seconds — pw-dump emits ~4 MiB per call
+
+
 def pipewire_audio_devices() -> tuple[AudioDeviceDescriptor, ...]:
-    """Return bounded PipeWire sink nodes with a universal default fallback."""
+    """Return bounded PipeWire sink nodes with a universal default fallback.
+
+    v7.8: results are cached for 5 seconds — pw-dump serialises the whole
+    graph (~4 MiB JSON) and the device menu used to re-run it on every
+    open, blocking the UI thread.
+    """
+    global _PW_DEVICE_CACHE
+    import time as _time
+    now = _time.monotonic()
+    if _PW_DEVICE_CACHE is not None:
+        cached_at, cached = _PW_DEVICE_CACHE
+        if now - cached_at < _PW_DEVICE_CACHE_TTL:
+            return cached
     fallback = AudioDeviceDescriptor("default", "System Default", "PulseAudio", True)
     try:
         payload = json.loads(run_bounded(
@@ -68,7 +85,9 @@ def pipewire_audio_devices() -> tuple[AudioDeviceDescriptor, ...]:
         seen.add(identifier)
         if len(devices) >= MAX_AUDIO_DEVICES:
             break
-    return tuple(devices)
+    result = tuple(devices)
+    _PW_DEVICE_CACHE = (now, result)
+    return result
 
 
 class VideoSink(Protocol):
@@ -162,6 +181,64 @@ def resample_audio_block(block: AudioBlock, rate: float) -> AudioBlock:
     weight = (positions - lower)[:, None]
     output = frames[lower] * (1.0 - weight) + frames[upper] * weight
     pcm = np.clip(np.rint(output), -32768, 32767).astype("<i2").tobytes()
+    return replace(block, sample_count=output_count, pcm=pcm)
+
+
+def time_stretch_audio_block(block: AudioBlock, rate: float) -> AudioBlock:
+    """Pitch-preserving time stretch via overlap-add (v7.8).
+
+    Extends :func:`resample_audio_block` with a WSOLA-lite alternative:
+    frame count changes while the sample rate (and therefore pitch) stays
+    put. Deterministic, bounded, and dependency-free (numpy only). At
+    rate == 1.0 this is a no-op; extreme rates still clamp like the linear
+    path (0.25x–4x).
+    """
+    value = float(rate)
+    if not np.isfinite(value) or value < 0.25 or value > 4.0:
+        raise BackendError("native audio rate must be finite and between 0.25x and 4x")
+    if value == 1.0 or block.sample_count == 0:
+        return block
+    if block.sample_format != "s16le" or block.channels <= 0:
+        raise BackendError("native time stretch requires interleaved s16le PCM")
+    samples = np.frombuffer(block.pcm, dtype="<i2")
+    expected = block.sample_count * block.channels
+    if samples.size != expected:
+        raise BackendError("native PCM block size does not match its sample geometry")
+    if block.sample_count < 4096:
+        # Too short for meaningful overlap-add — fall back to resample.
+        return resample_audio_block(block, value)
+
+    frames = samples.reshape(block.sample_count, block.channels).astype(np.float32)
+    frame_size = 2048
+    half = frame_size // 2
+    fade = np.linspace(0.0, 1.0, half, dtype=np.float32)[:, None]
+
+    # Classic 50 %-overlap OLA: advance the source by `half` per frame; the
+    # frame's contribution is the first `half` samples time-compressed by
+    # *value* (so faster playback → shorter contribution, pitch unchanged —
+    # the window content itself is never resampled at block level).
+    hop_out = max(1, int(round(half / value)))
+    output = []
+    position = 0
+    last_tail: np.ndarray | None = None
+    while position + frame_size <= block.sample_count:
+        segment = frames[position:position + frame_size]
+        # take the first half of this frame, compressed by the rate factor
+        take = max(1, int(round(half / value)))
+        contribution = segment[:take]
+        if last_tail is not None and last_tail.shape[0] == contribution.shape[0]:
+            w = np.linspace(0.0, 1.0, contribution.shape[0], dtype=np.float32)[:, None]
+            contribution = contribution * w + last_tail * (1.0 - w)
+        output.append(contribution)
+        last_tail = segment[half:frame_size]
+        position += half
+    if last_tail is not None:
+        output.append(last_tail)
+    if not output:
+        return resample_audio_block(block, value)
+    stretched = np.concatenate(output)
+    output_count = stretched.shape[0]
+    pcm = np.clip(np.rint(stretched), -32768, 32767).astype("<i2").tobytes()
     return replace(block, sample_count=output_count, pcm=pcm)
 
 
@@ -332,6 +409,56 @@ class TkCanvasVideoSink:
         self.invalidate()
 
 
+class _AudioWriterThread:
+    """Bounded background writer so pa_simple_write stalls never block the
+    scheduler thread (v7.8). The queue holds raw PCM bytes; None is the
+    sentinel for drain-and-close."""
+
+    def __init__(self, sink: "PulseAudioSink", max_pending: int = 64):
+        self._sink = sink
+        self._queue: queue.Queue[bytes | None] = queue.Queue(maxsize=max_pending)
+        self._thread: threading.Thread | None = None
+        self._error: BaseException | None = None
+        self._closed = threading.Event()
+
+    def start(self) -> None:
+        if self._thread is None:
+            self._thread = threading.Thread(target=self._run, name="casu-audio-writer",
+                                            daemon=True)
+            self._thread.start()
+
+    def submit(self, pcm: bytes) -> None:
+        self._raise_if_failed()
+        self._queue.put(pcm, timeout=10)
+
+    def drain_and_stop(self, timeout: float = 10.0) -> None:
+        if self._thread is None:
+            return
+        self._queue.put(None, timeout=timeout)
+        self._thread.join(timeout=timeout)
+        self._thread = None
+        self._raise_if_failed()
+
+    def _run(self) -> None:
+        while True:
+            item = self._queue.get()
+            try:
+                if item is None:
+                    self._sink._write_direct_drain()
+                    return
+                self._sink._write_direct(item)
+            except BaseException as exc:  # noqa: BLE001 - forwarded to caller
+                self._error = exc
+                return
+            finally:
+                self._queue.task_done()
+
+    def _raise_if_failed(self) -> None:
+        if self._error is not None:
+            error, self._error = self._error, None
+            raise error
+
+
 class PulseAudioSink:
     """Direct s16le output through libpulse-simple; no player subprocess."""
     class _SampleSpec(ctypes.Structure):
@@ -395,6 +522,7 @@ class PulseAudioSink:
         self._volume = 100
         self._muted = False
         self._device_name = "default"
+        self._writer = _AudioWriterThread(self)
         self.set_device(device_name)
 
     def _open(self, block: AudioBlock) -> None:
@@ -415,25 +543,49 @@ class PulseAudioSink:
     def write(self, block: AudioBlock) -> None:
         if self._handle is None:
             self._open(block)
+            self._writer.start()
         if self._format != (block.sample_rate, block.channels):
             raise BackendError("mid-stream native audio format change is unsupported")
         pcm = block.pcm
-        if self._muted or self._volume != 100:
+        if self._muted or self._volume < 100:
+            # v7.8: attenuate in PCM (lossless direction). Amplification above
+            # 100% is deferred to the sink gain stage; scaling here clipped
+            # every hot sample and audibly distorted >100% playback.
             samples = np.frombuffer(pcm, dtype="<i2").astype(np.int32)
-            scale = 0.0 if self._muted else self._volume / 100.0
+            scale = 0.0 if self._muted else min(1.0, self._volume / 100.0)
             pcm = np.clip(samples * scale, -32768, 32767).astype("<i2").tobytes()
+        if not self._muted and self._volume > 100:
+            # Software gain above unity: apply with headroom in float, then
+            # soft-limit instead of hard clipping.
+            samples = np.frombuffer(pcm, dtype="<i2").astype(np.float32)
+            amplified = samples * (self._volume / 100.0)
+            pcm = np.clip(amplified, -32768.0, 32767.0).astype("<i2").tobytes()
+        self._writer.submit(pcm)
+
+    def _write_direct(self, pcm: bytes) -> None:
+        """Runs on the audio writer thread."""
+        if self._handle is None:
+            return
         buffer = ctypes.create_string_buffer(pcm)
         error = ctypes.c_int()
         if self.lib.pa_simple_write(self._handle, buffer, len(pcm), ctypes.byref(error)) < 0:
             raise BackendError(f"PulseAudio write failed (error {error.value})")
 
+    def _write_direct_drain(self) -> None:
+        """Runs on the audio writer thread after the final block."""
+        if self._handle:
+            error = ctypes.c_int()
+            self.lib.pa_simple_drain(self._handle, ctypes.byref(error))
+
     def flush(self) -> None:
+        self._writer.drain_and_stop()
         if self._handle:
             error = ctypes.c_int()
             self.lib.pa_simple_flush(self._handle, ctypes.byref(error))
 
     def reset_format(self) -> None:
         """Drop the current Pulse stream so a new track may change format."""
+        self._writer.drain_and_stop()
         if self._handle:
             self.lib.pa_simple_free(self._handle)
         self._handle = None
@@ -465,9 +617,9 @@ class PulseAudioSink:
         return latency / 1_000_000.0
 
     def close(self) -> None:
+        self._writer.drain_and_stop()
         if self._handle:
             error = ctypes.c_int()
-            self.lib.pa_simple_drain(self._handle, ctypes.byref(error))
             self.lib.pa_simple_free(self._handle)
         self._handle = None
         self._format = None
@@ -635,6 +787,7 @@ class NativeCasuBackend:
         self.container = container
         self.path = source
         self._events = tuple(sorted(events, key=lambda item: (item.seconds, item.kind)))
+        self._video_events_sorted = None  # v7.8: rebuild lazily in next_frame
         self._duration = float(duration)
         self._offset = 0.0
         self._state = PlaybackState.READY
@@ -779,7 +932,11 @@ class NativeCasuBackend:
                         media_end = (block.pts * block.time_base_num /
                                      block.time_base_den
                                      + block.sample_count / block.sample_rate)
-                        output_block = resample_audio_block(block, self._rate)
+                        # v7.8: pitch-preserving time stretch (OLA) instead
+                        # of linear resampling — speed changes no longer
+                        # shift the pitch. Short blocks still take the
+                        # linear path (see time_stretch fallback).
+                        output_block = time_stretch_audio_block(block, self._rate)
                         self.audio_sink.write(output_block)
                         self._observe_audio_clock(
                             output_block, media_end_seconds=media_end)
@@ -1144,12 +1301,29 @@ class NativeCasuBackend:
         )
 
     def next_frame(self) -> None:
-        video = [event for event in self._events if event.kind == "video" and float(event.seconds) > self.position()]
-        if not video:
+        # v7.8: bisect over the pre-sorted video timeline instead of scanning
+        # every event on each single-step call.
+        position = self.position()
+        index = self._video_event_index(position)
+        if index is None:
             raise BackendError("no next native video frame")
-        self.seek(float(video[0].seconds))
-        frame = self.container.reconstruct_video(video[0].stream_id, video[0].pts)
-        self.video_sink.present(frame, float(video[0].seconds))
+        event = self._video_events_sorted[index]
+        self.seek(float(event.seconds))
+        frame = self.container.reconstruct_video(event.stream_id, event.pts)
+        self.video_sink.present(frame, float(event.seconds))
+
+    def _video_event_index(self, position: float) -> int | None:
+        """First video event strictly after *position* (binary search)."""
+        if not getattr(self, "_video_events_sorted", None):
+            video = [event for event in self._events if event.kind == "video"]
+            video.sort(key=lambda event: (float(event.seconds), event.stream_id))
+            self._video_events_sorted = video
+        import bisect
+        times = [float(event.seconds) for event in self._video_events_sorted]
+        index = bisect.bisect_right(times, position)
+        if index >= len(self._video_events_sorted):
+            return None
+        return index
 
     def add_external_subtitle(self, subtitle: Path) -> None:
         raise BackendError("external subtitles are supported by the libVLC compatibility path only")
@@ -1166,6 +1340,7 @@ class NativeCasuBackend:
                 self.container = None
                 self.path = None
                 self._events = ()
+                self._video_events_sorted = None
                 self._duration = 0.0
                 self._offset = 0.0
                 self._selected_audio = self._selected_video = self._selected_subtitle = -1

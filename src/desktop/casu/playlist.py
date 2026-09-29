@@ -36,6 +36,7 @@ _EXT_M3U = frozenset({".m3u", ".m3u8"})
 _EXT_PLS = frozenset({".pls"})
 _EXT_WPL = frozenset({".wpl"})
 _EXT_XSPF = frozenset({".xspf"})
+_EXT_CUE = frozenset({".cue"})
 _EXT_JSPF = frozenset({".jspf"})
 _EXT_ASX = frozenset({".asx", ".wmx", ".wvx", ".axs"})
 _EXT_RMP = frozenset({".rmp", ".ram", ".rmm"})
@@ -609,6 +610,22 @@ def save_playlist_file(path: str | Path, model: PlaylistModel) -> Path:
             raise PlaylistError("playlist exceeds safety limit")
         target.write_text(text, encoding="utf-8")
         return target
+    if suffix in _EXT_CUE:
+        # v7.8: CUE sheet writer — one FILE per track (non-compliant to the
+        # original single-image CUE convention, but the de-facto standard for
+        # track playlists that every player accepts).
+        lines = ['TITLE "MPCASU Playlist"', 'FILE "playlist.wav" WAVE']
+        for index, item in enumerate(model.items, 1):
+            title = Path(str(item)).name
+            lines.append(f'  TRACK {index:02d} AUDIO')
+            lines.append(f'    TITLE "{title.replace(chr(34), chr(39))}"')
+            lines.append('    INDEX 01 00:00:00')
+        lines.append('')
+        text = "\n".join(lines) + "\n"
+        if len(text.encode("utf-8")) > MAX_PLAYLIST_FILE_BYTES:
+            raise PlaylistError("playlist exceeds safety limit")
+        target.write_text(text, encoding="utf-8")
+        return target
     text = None
     if suffix in _EXT_WPL:
         text = '<smil><body><seq>' + ''.join(f'<media src="{_xml_escape(str(item))}"/>' for item in model.items) + '</seq></body></smil>'
@@ -663,6 +680,10 @@ def detect_entry_type(path: str | Path) -> str:
             host = parsed.hostname.lower() if parsed.hostname else ""
             if host in _YOUTUBE_HOSTS:
                 return "youtube"
+            # v7.8: Spotify before the generic http branch — open.spotify.com
+            # URLs were previously classified as plain http-streams.
+            if host and "spotify.com" in host:
+                return "spotify"
             if parsed.scheme in {"http", "https"}:
                 return "http-stream"
             if parsed.scheme in {"rtsp", "rtsps"}:
@@ -685,7 +706,7 @@ def detect_entry_type(path: str | Path) -> str:
         return "mp5"
     if suffix in _EXT_M3U or suffix in _EXT_PLS or suffix in _EXT_WPL or \
        suffix in _EXT_XSPF or suffix in _EXT_JSPF or suffix in _EXT_ASX or \
-       suffix in _EXT_RMP:
+       suffix in _EXT_RMP or suffix in _EXT_CUE:
         return "playlist"
     try:
         parsed = urlparse(str(source))

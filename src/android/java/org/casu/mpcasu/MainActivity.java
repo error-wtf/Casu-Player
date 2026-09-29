@@ -108,6 +108,16 @@ public class MainActivity extends Activity implements PlayerEngine.Listener {
     private Button rateBtn;
     private Button recordBtn;
     private SeekBar volumeBar;
+    // v7.8: TV/landscape video layout state
+    private boolean tvMode;
+    private LinearLayout meta;
+    private LinearLayout times;
+    private LinearLayout secondary;
+    private LinearLayout recordRow;
+    private LinearLayout volumeRow;
+    private int videoW;
+    private int videoH;
+    private boolean immersiveActive;
     private boolean draggingSeek;
     private boolean videoActive;
 
@@ -238,6 +248,14 @@ public class MainActivity extends Activity implements PlayerEngine.Listener {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         ui = new android.os.Handler(getMainLooper());
+        // v7.8: detect TV (FireTV / Android TV) so the play view can switch to
+        // a video-first layout with an overlay transport instead of the phone
+        // stack that squeezes the video into a corner on 1080p TVs.
+        android.app.UiModeManager uiModeManager =
+                (android.app.UiModeManager) getSystemService(UI_MODE_SERVICE);
+        tvMode = (uiModeManager != null && uiModeManager.getCurrentModeType()
+                == android.content.res.Configuration.UI_MODE_TYPE_TELEVISION)
+                || getResources().getConfiguration().smallestScreenWidthDp >= 600;
         settings = Settings.load(this);
         recordFormat = settings.recordFormat;
         recordFolderUri = settings.recordFolder;
@@ -473,7 +491,10 @@ public class MainActivity extends Activity implements PlayerEngine.Listener {
                 if (engine != null) engine.setSurface(new Surface(surface));
             }
             @Override public void onSurfaceTextureSizeChanged(android.graphics.SurfaceTexture surface,
-                                                              int width, int height) { }
+                                                              int width, int height) {
+                // v7.8: rotation/resize must re-fit the video geometry
+                applyVideoAspect();
+            }
             @Override public boolean onSurfaceTextureDestroyed(android.graphics.SurfaceTexture surface) {
                 if (engine != null) engine.setSurface(null);
                 return true;
@@ -503,7 +524,7 @@ public class MainActivity extends Activity implements PlayerEngine.Listener {
                 Gravity.TOP | Gravity.START));
 
         // title + artist
-        LinearLayout meta = new LinearLayout(this);
+        meta = new LinearLayout(this);
         meta.setOrientation(LinearLayout.VERTICAL);
         titleView = new TextView(this);
         titleView.setTextColor(TEXT);
@@ -539,7 +560,7 @@ public class MainActivity extends Activity implements PlayerEngine.Listener {
             private int value(SeekBar bar) { return bar.getProgress(); }
         });
 
-        LinearLayout times = new LinearLayout(this);
+        times = new LinearLayout(this);
         times.setOrientation(LinearLayout.HORIZONTAL);
         timeNow = new TextView(this);
         timeNow.setTextColor(MUTED);
@@ -575,7 +596,7 @@ public class MainActivity extends Activity implements PlayerEngine.Listener {
         page.addView(transport);
 
         // secondary row (compact: shuffle/repeat/A-B/snapshot/rate)
-        LinearLayout secondary = new LinearLayout(this);
+        secondary = new LinearLayout(this);
         secondary.setOrientation(LinearLayout.HORIZONTAL);
         secondary.setGravity(Gravity.CENTER);
         shuffleBtn = smallButton("⤨");
@@ -616,7 +637,7 @@ public class MainActivity extends Activity implements PlayerEngine.Listener {
         page.addView(secondary);
 
         // record row — own, prominent, always visible
-        LinearLayout recordRow = new LinearLayout(this);
+        recordRow = new LinearLayout(this);
         recordRow.setOrientation(LinearLayout.HORIZONTAL);
         recordRow.setGravity(Gravity.CENTER);
         recordRow.setPadding(0, dp(4), 0, 0);
@@ -628,7 +649,7 @@ public class MainActivity extends Activity implements PlayerEngine.Listener {
         page.addView(recordRow);
 
         // volume row
-        LinearLayout volumeRow = new LinearLayout(this);
+        volumeRow = new LinearLayout(this);
         volumeRow.setOrientation(LinearLayout.HORIZONTAL);
         volumeRow.setGravity(Gravity.CENTER_VERTICAL);
         volumeRow.setPadding(dp(8), 0, dp(8), 0);
@@ -667,6 +688,58 @@ public class MainActivity extends Activity implements PlayerEngine.Listener {
         stage.addView(subtitleView, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT,
                 Gravity.BOTTOM));
+
+        // v7.8: TV / landscape video-first layout — the vertical phone stack
+        // (meta + seek + times + transport + record + volume ≈ 330dp) squeezed
+        // the stage to a sliver on FireTV 1080p. On TV/landscape the controls
+        // become a translucent overlay inside the stage; the video gets the
+        // full surface. TV overscan padding per Android TV guidelines.
+        boolean landscape = getResources().getConfiguration().orientation
+                == android.content.res.Configuration.ORIENTATION_LANDSCAPE;
+        if (tvMode || landscape) {
+            page.setPadding(0, 0, 0, 0);
+            stageParams.bottomMargin = 0;
+            // collect the control rows into one translucent overlay inside stage
+            LinearLayout overlay = new LinearLayout(this);
+            overlay.setOrientation(LinearLayout.VERTICAL);
+            overlay.setPadding(dp(48) / 2, dp(27) / 2, dp(48) / 2, dp(27) / 2);
+            overlay.setBackgroundColor(Color.argb(150, 8, 10, 13));
+            overlay.removeAllViews();
+            overlay.addView(meta);
+            overlay.addView(seekBar, new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, dp(30)));
+            overlay.addView(times);
+            overlay.addView(secondary);
+            overlay.addView(recordRow);
+            overlay.addView(volumeRow, new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+            if (tvMode) {
+                // 10-foot UI: bigger hit targets and text on TV
+                titleView.setTextSize(22);
+                artistView.setTextSize(16);
+                playBtn.setTextSize(22);
+                playBtn.setMinHeight(dp(64));
+                int big = dp(56);
+                for (Button b : new Button[]{shuffleBtn, repeatBtn, abBtn, rateBtn}) {
+                    b.setMinHeight(big);
+                }
+                recordBtn.setMinHeight(dp(56));
+            }
+            FrameLayout.LayoutParams overlayParams = new FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT,
+                    Gravity.BOTTOM);
+            stage.addView(overlay, overlayParams);
+            overlay.setVisibility(View.GONE);
+            overlay.setTag("transport-overlay");
+            // tap on stage toggles the overlay; on TV any D-Pad key shows it
+            stage.setOnClickListener(v -> {
+                View bar = stage.findViewWithTag("transport-overlay");
+                if (bar != null) {
+                    bar.setVisibility(bar.getVisibility() == View.VISIBLE ? View.GONE : View.VISIBLE);
+                }
+                if (immersiveActive) applyImmersive(true); // re-arm hide timer
+            });
+        }
 
         return page;
     }
@@ -2028,10 +2101,48 @@ public class MainActivity extends Activity implements PlayerEngine.Listener {
     @Override public void onVideoSizeChanged(int width, int height) {
         ui.post(() -> {
             if (width > 0 && height > 0) {
+                videoW = width;
+                videoH = height;
                 videoActive = true;
+                applyVideoAspect();
                 updateStageFor(engine.current());
             }
         });
+    }
+
+    /**
+     * v7.8: fit the TextureView to the video aspect ratio, centred in the
+     * stage. Previously the view stayed MATCH_PARENT and the MediaPlayer
+     * backend stretched frames to the surface (VLC letterboxed instead —
+     * inconsistent geometry per backend).
+     */
+    private void applyVideoAspect() {
+        if (videoW == 0 || videoH == 0 || stage == null || videoView == null) return;
+        stage.post(() -> {
+            int sw = stage.getWidth();
+            int sh = stage.getHeight();
+            if (sw == 0 || sh == 0) return;
+            float scale = Math.min((float) sw / videoW, (float) sh / videoH);
+            int w = Math.round(videoW * scale);
+            int h = Math.round(videoH * scale);
+            FrameLayout.LayoutParams p = new FrameLayout.LayoutParams(w, h, Gravity.CENTER);
+            videoView.setLayoutParams(p);
+        });
+    }
+
+    /** v7.8: immersive fullscreen while a video is playing (TV + landscape). */
+    private void applyImmersive(boolean on) {
+        if (on == immersiveActive) return;
+        immersiveActive = on;
+        android.view.View decor = getWindow().getDecorView();
+        decor.setSystemUiVisibility(on
+                ? (View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+                   | View.SYSTEM_UI_FLAG_FULLSCREEN
+                   | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+                   | View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+                   | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
+                   | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN)
+                : View.SYSTEM_UI_FLAG_VISIBLE);
     }
 
     private void updateTimeLabels(long positionMs, long durationMs) {
@@ -2059,6 +2170,11 @@ public class MainActivity extends Activity implements PlayerEngine.Listener {
         waveLayout.height = cover ? dp(48) : FrameLayout.LayoutParams.MATCH_PARENT;
         waveLayout.gravity = Gravity.BOTTOM;
         waveView.setLayoutParams(waveLayout);
+        // v7.8: video → immersive on TV/landscape; audio/cover → normal chrome
+        boolean landscape = getResources().getConfiguration().orientation
+                == android.content.res.Configuration.ORIENTATION_LANDSCAPE;
+        applyImmersive(video && (tvMode || landscape));
+        if (video) applyVideoAspect();
     }
 
     private void attachVisualizer() {
@@ -2852,7 +2968,14 @@ public class MainActivity extends Activity implements PlayerEngine.Listener {
             Uri uri = intent.getData();
             withEngine(() -> openIncomingUri(uri));
         } else if (Intent.ACTION_SEND.equals(action)) {
-            Uri uri = intent.getParcelableExtra(Intent.EXTRA_STREAM);
+            // v7.8: type-safe accessor (getParcelableExtra(String) is
+            // deprecated on API 33+; Build.VERSION branch keeps minSdk 21).
+            final Uri uri;
+            if (android.os.Build.VERSION.SDK_INT >= 33) {
+                uri = intent.getParcelableExtra(Intent.EXTRA_STREAM, Uri.class);
+            } else {
+                uri = intent.getParcelableExtra(Intent.EXTRA_STREAM);
+            }
             if (uri != null) {
                 withEngine(() -> openIncomingUri(uri));
             } else {

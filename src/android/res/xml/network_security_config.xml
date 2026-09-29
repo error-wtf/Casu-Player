@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- MPCASU v7.8: Internet radio uses plain HTTP on arbitrary user-supplied
+     hosts, so cleartext stays enabled globally; documented trade-off (see
+     docs/). Replace with per-domain <domain-config> entries if you only use
+     known HTTPS stations. -->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true" />
+</network-security-config>

@@ -13,6 +13,8 @@ struct ContentView: View {
     @State private var exportedPlaylist: URL?
     @State private var providerURL: URL?
     @State private var showingProvider = false
+    @State private var fullscreenVideo = false
+    @AppStorage("youtubeConsent") private var youtubeConsent = false
 
     var body: some View {
         TabView {
@@ -28,6 +30,7 @@ struct ContentView: View {
                 .tabItem { Label("Settings", systemImage: "gearshape") }
         }
         .buttonStyle(RemoteButtonStyle())
+        .tint(.accentColor)
         .sheet(isPresented: $showingProvider) {
             if let url = providerURL { ProviderBrowserView(url: url).ignoresSafeArea() }
         }
@@ -81,13 +84,33 @@ struct ContentView: View {
                     Image(uiImage: artwork).resizable().scaledToFit()
                         .frame(maxHeight: 320).accessibilityLabel("Album cover")
                 } else {
-                    VideoPlayer(player: model.player).accessibilityLabel("Video player")
+                    // v7.8: kein erzwungenes 16:9 mehr — VideoPlayer passt sich der
+                    // echten Videoabmessung an (4:3, vertikal, ultrawide), sonst
+                    // erscheinen schwarze Balken oder das Video ist beschnitten.
+                    VideoPlayer(player: model.player)
+                        .aspectRatio(model.currentVideoAspectRatio ?? (16 / 9), contentMode: .fit)
+                        .frame(maxWidth: .infinity)
+                        .background(Color.black)
+                        .accessibilityLabel("Video player")
+                        .onTapGesture { fullscreenVideo = true }
+                        .fullScreenCover(isPresented: $fullscreenVideo) {
+                            VideoPlayer(player: model.player)
+                                .ignoresSafeArea()
+                                .background(Color.black.ignoresSafeArea())
+                                .onTapGesture { fullscreenVideo = false }
+                                .accessibilityLabel("Fullscreen video player")
+                        }
                 }
                 Text(model.current?.title ?? "Open media to begin").font(.headline).lineLimit(2)
                 Text([model.current?.artist, model.current?.album].compactMap { $0 }.joined(separator: " · "))
                     .font(.subheadline).foregroundStyle(.secondary).lineLimit(2)
                 Slider(value: Binding(get: { model.position }, set: model.seek), in: 0...max(1, model.duration))
                     .accessibilityIdentifier("playback.seek")
+                HStack {
+                    Text(Self.clock(model.position)).font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
+                    Spacer()
+                    Text(Self.clock(model.duration)).font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
+                }
                 HStack {
                     Button(action: model.previous) { Label("Previous", systemImage: "backward.fill") }.labelStyle(.iconOnly)
                     Button(action: model.togglePlayback) {
@@ -144,6 +167,16 @@ struct ContentView: View {
                         providerLink("Browse", "https://www.google.com/")
                     }
                 }
+                if !youtubeConsent {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("YouTube-Suche nutzt die \u00f6ffentliche Innertube-API. Nur f\u00fcr private Nutzung.")
+                            .font(.caption).foregroundStyle(.secondary)
+                        Toggle("YouTube aktivieren (nur privat)", isOn: $youtubeConsent)
+                    }
+                    .padding(10)
+                    .background(RoundedRectangle(cornerRadius: 8).fill(Color.secondary.opacity(0.15)))
+                    .accessibilityIdentifier("youtube.consent-banner")
+                }
                 Picker("Search type", selection: $youtube.kind) {
                     ForEach(YouTubeSearchKind.allCases) { Text($0.rawValue).tag($0) }
                 }.pickerStyle(.segmented).remoteControlFocus().accessibilityIdentifier("youtube.search-kind")
@@ -197,9 +230,16 @@ struct ContentView: View {
                         Stepper("Every \(recording.intervalMinutes) minutes", value: $recording.intervalMinutes, in: 1...1440)
                     }
                 }
-                Section("About") { Text("MPCASU 7.0.0 · Native iOS port of MPCASU Android") }
+                Section("About") { Text("MPCASU 7.8.0 · Native iOS port of MPCASU Android") }
             }.navigationTitle("Settings")
         }
+    }
+
+    /// mm:ss (bzw. h:mm:ss) für Positions-/Dauer-Anzeige.
+    private static func clock(_ seconds: Double) -> String {
+        let total = Int(max(0, seconds.isFinite ? seconds : 0))
+        let h = total / 3600, m = (total % 3600) / 60, s = total % 60
+        return h > 0 ? String(format: "%d:%02d:%02d", h, m, s) : String(format: "%d:%02d", m, s)
     }
 
     private func providerLink(_ name: String, _ address: String) -> some View {

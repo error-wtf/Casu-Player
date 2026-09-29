@@ -75,16 +75,19 @@ def decode_all_pcm(path: str | Path) -> tuple[np.ndarray | None, int, int]:
                 return None, 0, 0
             pcm = np.asarray(samples, dtype=np.float32) / 32768.0
             return pcm, rate, channels
+        # v7.8: decode at 11.025 kHz mono — waveform peaks need nowhere near
+        # CD rate, so this quadruples the maximum media length that fits the
+        # bounded output budget (was 44.1 kHz / ~16 min cap).
         raw = run_bounded([
             "ffmpeg", "-v", "error", "-i", str(source), "-map", "0:a:0",
-            "-ac", "1", "-ar", "44100", "-f", "s16le", "pipe:1",
-        ], max_output_bytes=88_200_000 * 2, timeout_seconds=60)
+            "-ac", "1", "-ar", "11025", "-f", "s16le", "pipe:1",
+        ], max_output_bytes=88_200_000 * 2, timeout_seconds=120)
         samples = array.array("h")
         samples.frombytes(raw)
         if samples.itemsize == 2 and sys.byteorder != "little":
             samples.byteswap()
         pcm = np.asarray(samples, dtype=np.float32) / 32768.0
-        rate = 44100
+        rate = 11025
         return pcm, rate, 1
     except (OSError, ValueError, ProbeError, WaveformError):
         return None, 0, 0

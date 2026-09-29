@@ -6,21 +6,25 @@ options:
 settings:
   base:
     SWIFT_VERSION: "5.0"
-    CURRENT_PROJECT_VERSION: 7
-    MARKETING_VERSION: 7.0.0
+    CURRENT_PROJECT_VERSION: 8
+    MARKETING_VERSION: 7.8.0
 targets:
   MPCASU:
     type: application
     platform: iOS
-    sources: [MPCASU]
+    sources:
+      - path: MPCASU
+        createIntermediateGroups: true
     info:
       path: MPCASU/Info.plist
       properties:
         CFBundleDisplayName: MPCASU
         MPCASUYouTubeAPIKey: $(YOUTUBE_API_KEY)
-        CFBundleShortVersionString: 7.0.0
-        CFBundleVersion: 7
-        UILaunchScreen: {}
+        CFBundleShortVersionString: 7.8.0
+        CFBundleVersion: 8
+        UILaunchScreen:
+          UIColorName: AccentColor
+          UIImageName: AppIcon
         UISupportsDocumentBrowser: true
         UIFileSharingEnabled: true
         LSSupportsOpeningDocumentsInPlace: true

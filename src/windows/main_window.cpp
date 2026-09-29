@@ -3202,6 +3202,12 @@ void MainWindow::toggle_fullscreen() {
         exit_fullscreen_ui();
         return;
     }
+    // v7.8: remember pre-fullscreen visibility so exit restores exactly what
+    // the user had (a hidden diagnostics bar used to reappear).
+    fs_saved_visible_ = {sidebar_ && sidebar_->isVisible(),
+                         topbar_ && topbar_->isVisible(),
+                         transport_frame_ && transport_frame_->isVisible(),
+                         diagnostics_bar_ && diagnostics_bar_->isVisible()};
     // Linux parity: hide chrome, floating transport overlay instead.
     if (sidebar_) sidebar_->hide();
     if (topbar_) topbar_->hide();
@@ -3214,10 +3220,10 @@ void MainWindow::toggle_fullscreen() {
 
 void MainWindow::exit_fullscreen_ui() {
     hide_fs_overlay();
-    if (sidebar_) sidebar_->show();
-    if (topbar_) topbar_->show();
-    if (transport_frame_) transport_frame_->show();
-    if (diagnostics_bar_) diagnostics_bar_->show();
+    if (sidebar_) sidebar_->setVisible(fs_saved_visible_.sidebar);
+    if (topbar_) topbar_->setVisible(fs_saved_visible_.topbar);
+    if (transport_frame_) transport_frame_->setVisible(fs_saved_visible_.transport);
+    if (diagnostics_bar_) diagnostics_bar_->setVisible(fs_saved_visible_.diag);
     statusBar()->show();
 }
 

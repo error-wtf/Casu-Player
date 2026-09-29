@@ -57,7 +57,7 @@ class VideoSurface(QWidget):
         self.setMouseTracking(True)
         self.setFocusPolicy(Qt.StrongFocus)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        self.setMinimumSize(320, 180)
+        self.setMinimumSize(160, 90)
         self._video_active = False
         self._cover: QPixmap | None = None
         self._native_frame: QPixmap | None = None

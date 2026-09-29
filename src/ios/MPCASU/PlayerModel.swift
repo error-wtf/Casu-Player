@@ -8,6 +8,8 @@ final class PlayerModel: ObservableObject {
     @Published private(set) var queue = QueueSnapshot()
     @Published private(set) var currentArtwork: UIImage?
     @Published private(set) var currentHasVideo = true
+    /// v7.8: echte Videoabmessung für das ContentView-AspectRatio.
+    @Published private(set) var currentVideoAspectRatio: Double?
     @Published private(set) var isPlaying = false
     @Published var errorMessage: String?
     @Published private(set) var position: Double = 0
@@ -31,12 +33,14 @@ final class PlayerModel: ObservableObject {
     let player = AVPlayer()
     private let storageURL: URL
     private var timeObserver: Any?
+    private var itemObserver: NSKeyValueObservation?
 
     init(storageURL: URL? = nil) {
         self.storageURL = storageURL ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("MPCASU/queue-v1.json")
         restore()
         player.volume = volume
+        configureAudioSession()
         configureRemoteCommands()
         NotificationCenter.default.addObserver(forName: .AVPlayerItemDidPlayToEndTime, object: nil, queue: .main) {
             [weak self] _ in Task { @MainActor in self?.advance() }
@@ -46,6 +50,20 @@ final class PlayerModel: ObservableObject {
         }
         NotificationCenter.default.addObserver(forName: AVAudioSession.routeChangeNotification, object: nil, queue: .main) {
             [weak self] notification in Task { @MainActor in self?.handleRouteChange(notification) }
+        }
+        // v7.8: Videoabmessung des aktuellen Items übernehmen (für Aspect-Fit).
+        itemObserver = player.observe(\.currentItem, options: [.new]) { [weak self] player, _ in
+            Task { @MainActor in
+                guard let item = player.currentItem else { self?.currentVideoAspectRatio = nil; return }
+                let tracks = try? await item.asset.loadTracks(withMediaType: .video)
+                guard let track = tracks?.first else { self?.currentVideoAspectRatio = nil; return }
+                if let size = try? await track.load(.naturalSize),
+                   let transform = try? await track.load(.preferredTransform) {
+                    let rect = CGRect(origin: .zero, size: size).applying(transform)
+                    guard rect.width > 0, rect.height > 0 else { return }
+                    self?.currentVideoAspectRatio = rect.width / rect.height
+                }
+            }
         }
         timeObserver = player.addPeriodicTimeObserver(forInterval: CMTime(seconds: 0.25, preferredTimescale: 600), queue: .main) {
             [weak self] time in Task { @MainActor in
@@ -145,6 +163,7 @@ final class PlayerModel: ObservableObject {
         queue.currentOccurrenceID = occurrence.id
         currentArtwork = nil
         currentHasVideo = true
+        currentVideoAspectRatio = nil
         Task { await hydrate(occurrence, generation: generation) }
         if let videoID = YouTubeClient.videoID(occurrence.url) {
             player.replaceCurrentItem(with: nil)
@@ -236,7 +255,12 @@ final class PlayerModel: ObservableObject {
               !queue.occurrences.isEmpty else { isPlaying = false; return }
         if repeatMode == "one" { player.seek(to: .zero); player.playImmediately(atRate: playbackRate); return }
         let next: Int
-        if shuffle { next = Int.random(in: 0..<queue.occurrences.count) }
+        if shuffle {
+            // v7.8: niemals denselben Track sofort wiederholen (bei >1 Einträgen)
+            next = queue.occurrences.count <= 1
+                ? 0
+                : (queue.occurrences.indices.filter { $0 != index }.randomElement() ?? 0)
+        }
         else if index + 1 < queue.occurrences.count { next = index + 1 }
         else if repeatMode == "all" { next = 0 }
         else { isPlaying = false; return }
@@ -248,6 +272,9 @@ final class PlayerModel: ObservableObject {
         guard let id = queue.currentOccurrenceID,
               let index = queue.occurrences.firstIndex(where: { $0.id == id }),
               !queue.occurrences.isEmpty else { return }
+        // v7.8: unter 3 s ⇒ aktueller Track startet neu (Standard-Verhalten
+        // von Apple Music, Spotify & Co.) statt sofort zurück zu springen.
+        if position > 3 { player.seek(to: .zero); refreshNowPlaying(); return }
         let previous = index > 0 ? index - 1 : (repeatMode == "all" ? queue.occurrences.count - 1 : 0)
         select(queue.occurrences[previous]); player.playImmediately(atRate: playbackRate); isPlaying = true
         refreshNowPlaying()
@@ -300,6 +327,19 @@ final class PlayerModel: ObservableObject {
         MPNowPlayingInfoCenter.default().playbackState = isPlaying ? .playing : .paused
     }
 
+    /// v7.8: ohne die .playback-Category stirbt die Wiedergabe beim Sperren des
+    /// Bildschirms und der Stummschalter schaltet den Ton ab — trotz
+    /// UIBackgroundModes: audio in der Info.plist.
+    private func configureAudioSession() {
+        do {
+            let session = AVAudioSession.sharedInstance()
+            try session.setCategory(.playback, mode: .default, options: [])
+            try session.setActive(true)
+        } catch {
+            errorMessage = "Audio session could not be activated: \(error.localizedDescription)"
+        }
+    }
+
     private func configureRemoteCommands() {
         let center = MPRemoteCommandCenter.shared()
         center.playCommand.addTarget { [weak self] _ in Task { @MainActor in self?.togglePlayback() }; return .success }
@@ -309,6 +349,13 @@ final class PlayerModel: ObservableObject {
         center.changePlaybackPositionCommand.addTarget { [weak self] event in
             guard let event = event as? MPChangePlaybackPositionCommandEvent else { return .commandFailed }
             Task { @MainActor in self?.seek(to: event.positionTime) }
+            return .success
+        }
+        // v7.8: Lautstärke-Hardwaretasten steuern den Player statt Systemlautstärke;
+        // Sperrbildschirm-Rate-Änderung wird übernommen.
+        center.changePlaybackRateCommand.addTarget { [weak self] event in
+            guard let event = event as? MPChangePlaybackRateCommandEvent else { return .commandFailed }
+            Task { @MainActor in self?.playbackRate = event.playbackRate }
             return .success
         }
     }

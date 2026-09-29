@@ -288,6 +288,9 @@ private:
     QLabel* fs_time_ = nullptr;
     QPushButton* fs_play_btn_ = nullptr;
     QTimer* fs_hide_timer_ = nullptr;
+    struct FsSavedVisible { bool sidebar{true}; bool topbar{true};
+                            bool transport{true}; bool diag{true}; };
+    FsSavedVisible fs_saved_visible_;
     QLabel* status_label_ = nullptr;    // left: version (MPCASU 5.0.0)
     QLabel* status_center_ = nullptr;   // center: transient status messages
     QLabel* toast_label_ = nullptr;

@@ -57,6 +57,10 @@ from casu.recording import MediaRecorder, RecordingError
 
 from casu.native import NativeCasuError, read_native
 from casu.native_v2 import ChunkType, NativeV2Error, read_native_v2
+from .pages import AboutPage, EpgPage, LibraryPage, OptionsPage
+from .playlist_widget import PlaylistPane, QueueTree
+from .sources import SourcesView
+from .threads import _ThreadBridge
 
 from mpcasu_backend import (
     BackendError, CasuBackend, LibVLCBackend, PlaybackState,
@@ -382,692 +386,6 @@ class Sidebar(QFrame):
             btn.setChecked(btn.property("nav_name") == entry)
 
 
-class QueueTree(QTreeWidget):
-    """Queue list with drag-reorder, Delete removal and a context menu."""
-
-    orderChanged = Signal(list)
-    removePressed = Signal(list)
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setHeaderHidden(True)
-        self.setColumnCount(2)
-        self.setColumnWidth(0, METRICS.playlist_width - 110)
-        self.setColumnWidth(1, 104)
-        self.setRootIsDecorated(True)
-        self.setUniformRowHeights(True)
-        self.setDragDropMode(QAbstractItemView.InternalMove)
-        self.setDefaultDropAction(Qt.MoveAction)
-        self.setDropIndicatorShown(True)
-        self.setSelectionMode(QAbstractItemView.ExtendedSelection)
-        self.setStyleSheet(f"""
-            QTreeWidget {{
-                background-color: {PALETTE.surface_alt};
-                border: 0; outline: 0; font-size: 12px;
-            }}
-            QTreeWidget::item {{
-                background: transparent;
-                border-bottom: 1px solid {PALETTE.border};
-                padding: 7px 6px; color: {PALETTE.text};
-            }}
-            QTreeWidget::item:hover {{ background-color: #171b20; }}
-            QTreeWidget::item:selected {{
-                background-color: {PALETTE.accent_wash};
-                color: {PALETTE.accent};
-            }}
-            QTreeWidget::branch {{ background: transparent; }}
-            QScrollBar:vertical {{ background: {PALETTE.surface}; width: 10px; }}
-            QScrollBar::handle:vertical {{ background: {PALETTE.border_strong}; border-radius: 5px; }}
-        """)
-
-    def dropEvent(self, event):
-        super().dropEvent(event)
-        order = []
-        for index in range(self.topLevelItemCount()):
-            order.append(self.topLevelItem(index).data(0, Qt.UserRole))
-        self.orderChanged.emit(order)
-
-    def keyPressEvent(self, event):
-        if event.key() in (Qt.Key_Delete, Qt.Key_Backspace):
-            rows = sorted({self.indexOfTopLevelItem(item)
-                           for item in self.selectedItems()
-                           if self.indexOfTopLevelItem(item) >= 0}, reverse=True)
-            if rows:
-                self.removePressed.emit(rows)
-                return
-        super().keyPressEvent(event)
-
-
-class PlaylistPane(QFrame):
-    """Right-side playlist drawer with expandable playlists."""
-
-    playRequested = Signal(int)
-    removeRequested = Signal(list)
-    # moveRequested: (delta, selected top-level rows) — moving a multi-
-    # selection (Ctrl/Shift) moves all selected rows together.
-    moveRequested = Signal(int, list)
-    orderChanged = Signal(list)
-    childPlayRequested = Signal(str)
-    saveRequested = Signal()
-    loadRequested = Signal()
-    addRequested = Signal()
-    urlRequested = Signal()
-    renameRequested = Signal(int)
-    favoriteRequested = Signal(list)
-    # mergeRequested: emit the selected top-level rows (media/URLs) so the
-    # main window can offer to merge/append them into a playlist.
-    mergeRequested = Signal(list)
-    # childRemoveRequested/childMoveRequested: playlist children taken out of
-    # their playlist file ("remove from playlist" / "move to playlist").
-    childRemoveRequested = Signal(list)
-    childMoveRequested = Signal(list)
-    newPlaylistRequested = Signal()
-    addCurrentToPlaylistRequested = Signal()
-
-    PLAYLIST_SUFFIXES = {".cue", ".m3u", ".m3u8", ".pls", ".json", ".wpl", ".xspf",
-                         ".jspf", ".asx", ".wmx", ".wvx", ".rmp", ".ram"}
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setObjectName("PlaylistPane")
-        self.setFixedWidth(METRICS.playlist_width)
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(0)
-
-        header = QFrame()
-        header.setObjectName("TopBar")
-        header_layout = QVBoxLayout(header)
-        header_layout.setContentsMargins(12, 14, 12, 8)
-        title = QLabel("PLAYLIST")
-        title.setObjectName("NowPlayingTitle")
-        title.setStyleSheet("font-size: 14px; background: transparent;")
-        header_layout.addWidget(title)
-        sub = QLabel("Queue · expandable · drag to reorder")
-        sub.setObjectName("NowPlayingMeta")
-        header_layout.addWidget(sub)
-        self._view_combo = QComboBox()
-        self._view_combo.setObjectName("IconButton")
-        for label, key in [("All items", "all"), ("Local files", "files"),
-                           ("Streams / IPTV", "streams"), ("Playlists", "playlists"),
-                           ("CASU", "casu"), ("YouTube", "youtube"),
-                           ("Spotify", "spotify")]:
-            self._view_combo.addItem(label, key)
-        self._view_combo.currentIndexChanged.connect(lambda *_: self._apply_view_filter())
-        header_layout.addWidget(self._view_combo)
-        actions = QHBoxLayout()
-        actions.setSpacing(6)
-        choose_btn = QPushButton("Choose files")
-        choose_btn.setObjectName("PrimaryButton")
-        choose_btn.setToolTip("Add media files to the queue (Ctrl+O)")
-        choose_btn.clicked.connect(lambda: self.addRequested.emit())
-        actions.addWidget(choose_btn, 1)
-        url_btn = QPushButton("Add URL")
-        url_btn.setObjectName("IconButton")
-        url_btn.setToolTip("Add a network stream URL (Ctrl+L)")
-        url_btn.clicked.connect(lambda: self.urlRequested.emit())
-        actions.addWidget(url_btn)
-        header_layout.addLayout(actions)
-        playlist_actions = QHBoxLayout()
-        playlist_actions.setSpacing(6)
-        new_playlist_btn = QPushButton("New playlist")
-        new_playlist_btn.setObjectName("IconButton")
-        new_playlist_btn.clicked.connect(lambda: self.newPlaylistRequested.emit())
-        playlist_actions.addWidget(new_playlist_btn)
-        add_current_btn = QPushButton("Add current media")
-        add_current_btn.setObjectName("IconButton")
-        add_current_btn.clicked.connect(
-            lambda: self.addCurrentToPlaylistRequested.emit())
-        playlist_actions.addWidget(add_current_btn)
-        header_layout.addLayout(playlist_actions)
-        layout.addWidget(header)
-
-        self.tree = QueueTree(self)
-        self._collapsed: set = set()
-        self._all_paths: list = []
-        self._display_titles: dict = {}
-        self._tag_titles: dict = {}
-        self._search = ""
-        self._thumb_bridge = _ThreadBridge()
-        self._thumb_bridge.resultReady.connect(self._apply_thumb)
-        self._thumb_dir = Path.home() / ".cache" / "mpcasu" / "thumbnails"
-        self.tree.itemDoubleClicked.connect(self._on_double_click)
-        self.tree.itemClicked.connect(self._on_item_clicked)
-        self.tree.itemExpanded.connect(self._on_expanded)
-        self.tree.itemCollapsed.connect(self._on_collapsed)
-        self.tree.orderChanged.connect(lambda order: self.orderChanged.emit(order))
-        self.tree.removePressed.connect(lambda rows: self.removeRequested.emit(rows))
-        self.tree.setContextMenuPolicy(Qt.CustomContextMenu)
-        self.tree.customContextMenuRequested.connect(self._context_menu)
-        self.tree.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOn)
-        self.tree.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-        self.tree.setIconSize(QSize(METRICS.thumbnail_width, METRICS.thumbnail_height))
-        layout.addWidget(self.tree, 1)
-
-        controls = QFrame()
-        controls.setObjectName("TopBar")
-        cl = QHBoxLayout(controls)
-        cl.setContentsMargins(10, 8, 10, 8)
-        up_btn = QPushButton("↑")
-        up_btn.setObjectName("IconButton")
-        up_btn.setFixedWidth(30)
-        up_btn.setToolTip("Move selection up")
-        up_btn.clicked.connect(lambda: self.moveRequested.emit(-1, self.selected_rows()))
-        cl.addWidget(up_btn)
-        down_btn = QPushButton("↓")
-        down_btn.setObjectName("IconButton")
-        down_btn.setFixedWidth(30)
-        down_btn.setToolTip("Move selection down")
-        down_btn.clicked.connect(lambda: self.moveRequested.emit(1, self.selected_rows()))
-        cl.addWidget(down_btn)
-        remove_btn = QPushButton("×")
-        remove_btn.setObjectName("IconButton")
-        remove_btn.setFixedWidth(30)
-        remove_btn.setToolTip("Remove selected entries (Del)")
-        remove_btn.clicked.connect(self._remove_selection)
-        cl.addWidget(remove_btn)
-        rename_btn = QPushButton("✎")
-        rename_btn.setObjectName("IconButton")
-        rename_btn.setFixedWidth(30)
-        rename_btn.setToolTip("Rename the selected queue entry")
-        rename_btn.clicked.connect(lambda: self.renameRequested.emit(self.selected_row()))
-        cl.addWidget(rename_btn)
-        cl.addStretch()
-        load_btn = QPushButton("Load")
-        load_btn.setObjectName("IconButton")
-        load_btn.setFixedWidth(46)
-        load_btn.setToolTip("Load M3U/PLS/JSON playlist")
-        load_btn.clicked.connect(lambda: self.loadRequested.emit())
-        cl.addWidget(load_btn)
-        save_btn = QPushButton("Save")
-        save_btn.setObjectName("IconButton")
-        save_btn.setFixedWidth(46)
-        save_btn.setToolTip("Save queue as M3U/PLS/JSON playlist")
-        save_btn.clicked.connect(lambda: self.saveRequested.emit())
-        cl.addWidget(save_btn)
-        layout.addWidget(controls)
-
-        self.empty_label = QLabel("No media queued\nAdd files or drop a playlist here")
-        self.empty_label.setAlignment(Qt.AlignCenter)
-        self.empty_label.setObjectName("NowPlayingMeta")
-        self.empty_label.setStyleSheet(f"color: {PALETTE.text_faint}; padding: 20px; background: transparent;")
-        layout.addWidget(self.empty_label)
-
-        footer = QFrame()
-        footer_layout = QHBoxLayout(footer)
-        footer_layout.setContentsMargins(12, 4, 12, 12)
-        self.shuffle_btn = QPushButton("Shuffle off")
-        self.shuffle_btn.setObjectName("IconButton")
-        self.shuffle_btn.setCheckable(True)
-        footer_layout.addWidget(self.shuffle_btn)
-        self.repeat_btn = QPushButton("Repeat off")
-        self.repeat_btn.setObjectName("IconButton")
-        footer_layout.addWidget(self.repeat_btn)
-        footer_layout.addStretch()
-        layout.addWidget(footer)
-
-    # --- public API used by MainWindow ---
-
-    def select_row(self, row: int):
-        if 0 <= row < self.tree.topLevelItemCount():
-            self.tree.setCurrentItem(self.tree.topLevelItem(row))
-
-    def select_child(self, playlist_path, child_path):
-        """Highlight a specific child of an expandable playlist group."""
-        playlist_path = str(playlist_path)
-        for index in range(self.tree.topLevelItemCount()):
-            top = self.tree.topLevelItem(index)
-            if str(top.data(0, Qt.UserRole) or "") != playlist_path:
-                continue
-            if not top.isExpanded():
-                top.setExpanded(True)
-                self._expand_playlist_item(top)
-            wanted = str(child_path)
-            for c in range(top.childCount()):
-                child = top.child(c)
-                if str(child.data(0, Qt.UserRole) or "") == wanted:
-                    self.tree.setCurrentItem(child)
-                    return
-            self.tree.setCurrentItem(top)
-            return
-
-    def selected_row(self) -> int:
-        items = self.tree.selectedItems()
-        for item in items:
-            row = self.tree.indexOfTopLevelItem(item)
-            if row >= 0:
-                return row
-        return -1
-
-    def selected_rows(self) -> list:
-        """Sorted top-level rows of the current (multi-)selection."""
-        return sorted({self.tree.indexOfTopLevelItem(item)
-                       for item in self.tree.selectedItems()
-                       if self.tree.indexOfTopLevelItem(item) >= 0})
-
-    def selected_child(self) -> str | None:
-        """Path/URL of the selected child of an expanded playlist group."""
-        for item in self.tree.selectedItems():
-            if item.parent() is not None and item.data(0, Qt.UserRole):
-                return str(item.data(0, Qt.UserRole))
-        return None
-
-    def selected_playlist_path(self) -> Path | None:
-        item = self.tree.currentItem()
-        if item is None:
-            return None
-        if item.parent() is not None:
-            item = item.parent()
-        value = str(item.data(0, Qt.UserRole) or "")
-        return Path(value) if self._is_playlist(value) else None
-
-    def _remove_selection(self):
-        child = self.selected_child()
-        if child is not None:
-            self.childRemoveRequested.emit([child])
-            return
-        rows = self.selected_rows()
-        if rows:
-            self.removeRequested.emit(rows)
-
-    def select_rows(self, indexes: list):
-        """Re-apply a multi-selection after a queue re-render."""
-        want = {str(self._all_paths[i]) for i in indexes
-                if 0 <= i < len(self._all_paths)}
-        if not want:
-            return
-        self.tree.blockSignals(True)
-        self.tree.clearSelection()
-        for index in range(self.tree.topLevelItemCount()):
-            item = self.tree.topLevelItem(index)
-            if str(item.data(0, Qt.UserRole)) in want:
-                item.setSelected(True)
-        self.tree.blockSignals(False)
-
-    def populate(self, paths: list, selected: int = -1):
-        self._all_paths = list(paths)
-        view = str(self._view_combo.currentData() or "all")
-        visible = [(index, path) for index, path in enumerate(self._all_paths)
-                   if self._matches(path, view)]
-        self.tree.blockSignals(True)
-        self.tree.clear()
-        for _index, path in visible:
-            item = QTreeWidgetItem([self._label_for(path)])
-            item.setData(0, Qt.UserRole, str(path))
-            item.setToolTip(0, str(path))
-            item.setText(1, self._badge_for(path))
-            item.setTextAlignment(1, Qt.AlignRight | Qt.AlignVCenter)
-            item.setForeground(1, QBrush(QColor(PALETTE.text_faint)))
-            item.setFont(1, QFont(item.font(0).family(), max(8, item.font(0).pointSize() - 1)))
-            item.setIcon(0, QIcon(self._thumb_for(path)))
-            item.setFlags(Qt.ItemIsSelectable | Qt.ItemIsEnabled
-                          | Qt.ItemIsDragEnabled | Qt.ItemIsDropEnabled)
-            self.tree.addTopLevelItem(item)
-            if self._is_playlist(path):
-                placeholder = QTreeWidgetItem(["…"])
-                placeholder.setFlags(Qt.NoItemFlags)
-                item.addChild(placeholder)
-                item.setExpanded(str(path) not in self._collapsed)
-        self.tree.blockSignals(False)
-        for index in range(self.tree.topLevelItemCount()):
-            item = self.tree.topLevelItem(index)
-            if item.isExpanded() and self._is_playlist(item.data(0, Qt.UserRole) or ""):
-                self._expand_playlist_item(item)
-                item.setExpanded(True)
-        if 0 <= selected < len(self._all_paths):
-            want = str(self._all_paths[selected])
-            for index in range(self.tree.topLevelItemCount()):
-                if str(self.tree.topLevelItem(index).data(0, Qt.UserRole)) == want:
-                    self.tree.setCurrentItem(self.tree.topLevelItem(index))
-                    break
-        if self._search:
-            self._apply_search()
-        self._request_thumbnails()
-        self.empty_label.setVisible(len(self._all_paths) == 0)
-
-    def set_search(self, text: str):
-        self._search = (text or "").strip().lower()
-        self._apply_search()
-
-    def set_view(self, key: str):
-        index = self._view_combo.findData(key)
-        if index >= 0:
-            self._view_combo.setCurrentIndex(index)
-        self._apply_view_filter()
-
-    def _apply_search(self):
-        query = self._search
-        for index in range(self.tree.topLevelItemCount()):
-            item = self.tree.topLevelItem(index)
-            label = item.text(0).lower()
-            child_hits = 0
-            if query and self._is_playlist(item.data(0, Qt.UserRole) or ""):
-                if not item.isExpanded():
-                    item.setExpanded(True)
-                for c in range(item.childCount()):
-                    child = item.child(c)
-                    hit = bool(query) and query in child.text(0).lower()
-                    child.setHidden(bool(query) and not hit)
-                    child_hits += 1 if hit else 0
-            item.setHidden(bool(query) and query not in label and child_hits == 0)
-
-    def _request_thumbnails(self):
-        jobs = []
-        for index in range(self.tree.topLevelItemCount()):
-            item = self.tree.topLevelItem(index)
-            path = str(item.data(0, Qt.UserRole) or "")
-            if not path or path.startswith(("http://", "https://", "rtsp://", "rtmp://")):
-                continue
-            if Path(path).suffix.lower() not in {".mp4", ".mkv", ".webm", ".mov", ".avi"}:
-                continue
-            jobs.append(path)
-        if not jobs:
-            return
-        bridge = self._thumb_bridge
-        cache = str(self._thumb_dir)
-
-        def worker():
-            from casu.thumbnail import thumbnail_for
-            for path in jobs:
-                try:
-                    thumb = thumbnail_for(path, cache)
-                except Exception:  # noqa: BLE001 - thumbnails are optional
-                    thumb = None
-                if thumb is not None:
-                    bridge.resultReady.emit((path, str(thumb)))
-        import threading
-        threading.Thread(target=worker, daemon=True).start()
-
-    def _apply_thumb(self, payload):
-        path, thumb = payload
-        pix = QPixmap(thumb)
-        if pix.isNull():
-            return
-        scaled = pix.scaled(METRICS.thumbnail_width, METRICS.thumbnail_height,
-                            Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation)
-        for index in range(self.tree.topLevelItemCount()):
-            item = self.tree.topLevelItem(index)
-            if str(item.data(0, Qt.UserRole) or "") == path:
-                item.setIcon(0, QIcon(scaled))
-
-    def _apply_view_filter(self):
-        current = self.tree.currentItem()
-        sel = -1
-        if current is not None and current.parent() is None:
-            want = str(current.data(0, Qt.UserRole))
-            if want in [str(p) for p in self._all_paths]:
-                sel = [str(p) for p in self._all_paths].index(want)
-        self.populate(self._all_paths, sel)
-
-    def _matches(self, path, view: str) -> bool:
-        s = str(path)
-        low = s.lower()
-        is_url = low.startswith(("http://", "https://", "rtsp://", "rtmp://"))
-        if view == "all":
-            return True
-        if view == "playlists":
-            return self._is_playlist(path)
-        if view == "files":
-            return not is_url and not self._is_playlist(path)
-        if view == "casu":
-            return low.endswith((".casu", ".mp5"))
-        if view == "youtube":
-            return "youtube.com" in low or "youtu.be" in low
-        if view == "spotify":
-            return "spotify.com" in low
-        if view == "streams":
-            return is_url and not self._is_playlist(path)
-        return True
-
-    def clear(self):
-        self.tree.clear()
-        self.empty_label.setVisible(True)
-
-    # --- internals ---
-
-    def _thumb_for(self, path) -> QPixmap:
-        """Web-style 54x38 thumbnail: red/dark gradient + format glyph."""
-        pixmap = QPixmap(METRICS.thumbnail_width, METRICS.thumbnail_height)
-        pixmap.fill(Qt.transparent)
-        painter = QPainter(pixmap)
-        gradient = QLinearGradient(0, 0, METRICS.thumbnail_width, METRICS.thumbnail_height)
-        gradient.setColorAt(0.0, QColor("#391119"))
-        gradient.setColorAt(1.0, QColor("#080b0f"))
-        painter.setBrush(QBrush(gradient))
-        painter.setPen(Qt.NoPen)
-        painter.drawRoundedRect(0, 0, METRICS.thumbnail_width, METRICS.thumbnail_height, 5, 5)
-        glyph = self._badge_for(path)
-        short = {"MP4": "▶", "MP3": "♪", "CASU": "◈", "MP5": "◉", "PLAYLIST": "≡",
-                 "STREAM": "∿", "YT": "▶", "RTSP": "∿", "RTMP": "∿", "HLS": "∿"}.get(glyph, "•")
-        painter.setPen(QPen(QColor(PALETTE.text), 15))
-        painter.drawText(pixmap.rect(), Qt.AlignCenter, short)
-        painter.end()
-        return pixmap
-
-    @staticmethod
-    def _is_playlist(path) -> bool:
-        # Remote URLs (even with a playlist-like suffix, e.g. stream.m3u8)
-        # are stream entries, never playlist groups.
-        try:
-            text = str(path)
-            if text.startswith(("http://", "https://", "rtsp://", "rtmp://",
-                                "udp://", "rtp://", "ftp://", "smb://")):
-                return False
-            return Path(text).suffix.lower() in PlaylistPane.PLAYLIST_SUFFIXES
-        except (TypeError, ValueError):
-            return False
-
-    @staticmethod
-    def _badge_for(path) -> str:
-        text = str(path)
-        if text.startswith(("http://", "https://", "rtsp://", "rtmp://")):
-            try:
-                etype = detect_entry_type(text)
-            except (ValueError, TypeError):
-                etype = "http-stream"
-            return {"youtube": "YT", "http-stream": "STREAM",
-                    "rtsp-stream": "RTSP", "rtmp-stream": "RTMP"}.get(
-                etype, "STREAM")
-        try:
-            return detect_media_type(path)
-        except (OSError, ValueError, TypeError):
-            return "MEDIA"
-
-    def _label_for(self, path) -> str:
-        text = str(path)
-        display = self._display_titles.get(text, "")
-        if display:
-            return display
-        if text.startswith(("http://", "https://", "rtsp://", "rtmp://",
-                            "udp://", "rtp://", "spotify:", "ytdl:")):
-            return text
-        cached = self._tag_titles.get(text)
-        if cached is None:
-            cached = self._tag_titles[text] = self._read_tag_title(Path(text))
-        return cached or Path(text).name
-
-    @staticmethod
-    def _read_tag_title(path) -> str:
-        """Return "title — artist" from media tags, else an empty string."""
-        try:
-            from casu.tags import metadata_for
-            tags = metadata_for(path)
-            title = str(tags.get("title") or "").strip()
-            artist = str(tags.get("artist") or "").strip()
-            if title:
-                return f"{title} — {artist}" if artist else title
-        except Exception:  # noqa: BLE001 - tags are best effort
-            return ""
-        return ""
-
-    @staticmethod
-    def _child_badge(entry) -> str:
-        text = str(entry)
-        try:
-            etype = detect_entry_type(text)
-        except (ValueError, TypeError):
-            etype = "local-file"
-        return {"local-file": detect_media_type(text) if Path(text).suffix else "FILE",
-                "casu": "CASU", "mp5": "MP5", "playlist": "PL",
-                "http-stream": "STREAM", "youtube": "YT",
-                "rtsp-stream": "RTSP", "rtmp-stream": "RTMP"}.get(etype, "MEDIA")
-
-    @staticmethod
-    def _child_label(entry, display: str = "") -> str:
-        text = str(entry)
-        name = display or (Path(text).name if not text.startswith(("http://", "https://", "rtsp://")) else text)
-        return name
-
-    def _on_clear(self):
-        rows = sorted({self.tree.indexOfTopLevelItem(item)
-                       for item in self.tree.selectedItems()
-                       if self.tree.indexOfTopLevelItem(item) >= 0}, reverse=True)
-        self.removeRequested.emit(rows)
-
-    def _on_double_click(self, item, _column):
-        if item.parent() is None and self._is_playlist(item.data(0, Qt.UserRole) or ""):
-            item.setExpanded(not item.isExpanded())
-            return
-        row = self.tree.indexOfTopLevelItem(item)
-        if row >= 0:
-            self.playRequested.emit(row)
-            return
-        parent = item.parent()
-        if parent is not None and item.data(0, Qt.UserRole):
-            self.childPlayRequested.emit(str(item.data(0, Qt.UserRole)))
-
-    def _on_item_clicked(self, item, _column):
-        if item.parent() is None and self._is_playlist(item.data(0, Qt.UserRole) or ""):
-            item.setExpanded(not item.isExpanded())
-            return
-
-    def _on_expanded(self, item):
-        self._collapsed.discard(item.data(0, Qt.UserRole))
-        self._expand_playlist_item(item)
-
-    def _on_collapsed(self, item):
-        self._collapsed.add(item.data(0, Qt.UserRole))
-
-    def _expand_playlist_item(self, item):
-        if item.childCount() and item.child(0).data(0, Qt.UserRole):
-            return
-        source = str(item.data(0, Qt.UserRole))
-        while item.childCount():
-            item.removeChild(item.child(0))
-        try:
-            loaded = load_playlist_file(source)
-        except (PlaylistError, OSError, ValueError) as exc:
-            error_item = QTreeWidgetItem([f"Could not expand: {exc}"])
-            error_item.setFlags(Qt.NoItemFlags)
-            item.addChild(error_item)
-            return
-        entries = list(loaded.items)
-        if not entries:
-            empty_item = QTreeWidgetItem(["(empty playlist)"])
-            empty_item.setFlags(Qt.NoItemFlags)
-            item.addChild(empty_item)
-            return
-        names = playlist_names(source)
-        for entry in entries:
-            display = names.get(str(entry), "")
-            child = QTreeWidgetItem([self._child_label(entry, display)])
-            child.setData(0, Qt.UserRole, str(entry))
-            if display:
-                child.setData(0, Qt.UserRole + 1, display)
-            child.setText(1, self._child_badge(entry))
-            child.setTextAlignment(1, Qt.AlignRight | Qt.AlignVCenter)
-            child.setForeground(1, QBrush(QColor(PALETTE.text_faint)))
-            child.setFont(1, QFont(child.font(0).family(), max(8, child.font(0).pointSize() - 1)))
-            child.setToolTip(0, str(entry))
-            child.setFlags(Qt.ItemIsSelectable | Qt.ItemIsEnabled)
-            item.addChild(child)
-
-    def name_for(self, url: str) -> str:
-        """Display name for a queued stream URL (from playlist EXTINF names)."""
-        for i in range(self.tree.topLevelItemCount()):
-            parent = self.tree.topLevelItem(i)
-            for c in range(parent.childCount()):
-                child = parent.child(c)
-                if str(child.data(0, Qt.UserRole)) == str(url):
-                    return str(child.data(0, Qt.UserRole + 1) or "").strip()
-        return ""
-
-    def refresh_group(self, playlist_path):
-        """Re-read the children of a playlist group from its (possibly
-        rewritten) file, keeping the current expanded/collapsed state."""
-        playlist_path = str(playlist_path)
-        for index in range(self.tree.topLevelItemCount()):
-            top = self.tree.topLevelItem(index)
-            if str(top.data(0, Qt.UserRole) or "") != playlist_path:
-                continue
-            expanded = top.isExpanded()
-            while top.childCount():
-                top.removeChild(top.child(0))
-            self._expand_playlist_item(top)
-            top.setExpanded(expanded)
-            return
-
-    def _context_menu(self, position):
-        item = self.tree.itemAt(position)
-        menu = QMenu(self)
-        if item is None:
-            menu.addAction("Clear queue", lambda: self.removeRequested.emit([]))
-            menu.exec(self.tree.viewport().mapToGlobal(position))
-            return
-        selected = self.tree.selectedItems()
-        top_rows = sorted({self.tree.indexOfTopLevelItem(sel)
-                           for sel in selected
-                           if self.tree.indexOfTopLevelItem(sel) >= 0})
-        row = self.tree.indexOfTopLevelItem(item)
-        # If the right-clicked item is not part of the current multi-selection,
-        # collapse the action set to that single item.
-        if row >= 0 and row not in top_rows:
-            top_rows = [row]
-        if row >= 0:
-            count = len(top_rows)
-            label = f"Play" if count <= 1 else f"Play ({count} items)"
-            menu.addAction(label, lambda: self.playRequested.emit(top_rows[0]))
-            if count == 1:
-                single = self.tree.topLevelItem(row)
-                if single.childCount() or self._is_playlist(str(single.data(0, Qt.UserRole))):
-                    if single.isExpanded():
-                        menu.addAction("Collapse", single.setCollapsed)
-                    else:
-                        menu.addAction("Expand", single.setExpanded)
-            menu.addSeparator()
-            menu.addAction("Move up", lambda: self.moveRequested.emit(-1, list(top_rows)))
-            menu.addAction("Move down", lambda: self.moveRequested.emit(1, list(top_rows)))
-            remove_label = "Remove" if count <= 1 else f"Remove ({count} items)"
-            menu.addAction(remove_label, lambda: self.removeRequested.emit(list(top_rows)))
-            menu.addSeparator()
-            fav_label = "Toggle ★ Favorite" if count <= 1 else f"Toggle ★ ({count} items)"
-            menu.addAction(fav_label, lambda: self.favoriteRequested.emit(list(top_rows)))
-        else:
-            parent = item.parent()
-            if parent is not None and item.data(0, Qt.UserRole):
-                menu.addAction("Play", lambda: self.childPlayRequested.emit(
-                    str(item.data(0, Qt.UserRole))))
-                # Playlist children (the media inside a playlist) can also be
-                # merged/added to any playlist, same as top-level rows.
-                child_rows = [item] if parent is None else [
-                    parent.child(c) for c in range(parent.childCount())
-                    if parent.child(c).isSelected()
-                    and parent.child(c).data(0, Qt.UserRole)]
-                if not child_rows or item not in child_rows:
-                    child_rows = [item]
-                data = [str(c.data(0, Qt.UserRole)) for c in child_rows]
-                label = "Save to playlist…" if len(data) == 1 else \
-                        f"Save {len(data)} items to playlist…"
-                menu.addAction(label, lambda: self.mergeRequested.emit(data))
-                move_label = "Move to playlist…" if len(data) == 1 else \
-                             f"Move {len(data)} items to playlist…"
-                menu.addAction(move_label, lambda: self.childMoveRequested.emit(data))
-                remove_label = "Remove from playlist" if len(data) == 1 else \
-                               f"Remove {len(data)} items from playlist"
-                menu.addAction(remove_label, lambda: self.childRemoveRequested.emit(data))
-        menu.exec(self.tree.viewport().mapToGlobal(position))
-
-
 class VisualizerWidget(QWidget):
     """Lightweight, UI-thread-rendered waveform visualizer for desktop."""
 
@@ -1371,1372 +689,6 @@ class DiagnosticsBar(QFrame):
                 self._labels[key].setText(value)
 
 
-class LibraryPage(QFrame):
-    """In-window media library: search + artist/album/genre navigation."""
-
-    addRequested = Signal(list)
-    refreshRequested = Signal()
-    backRequested = Signal()
-    playlistNewRequested = Signal()
-    playlistAddCurrentRequested = Signal(object)
-    playlistRemoveRequested = Signal(object, list)
-    playlistPlayRequested = Signal(object)
-
-    MODES = {"all": "All Tracks", "artists": "Artists", "albums": "Albums",
-             "genres": "Genres", "favorites": "Favorites", "playlists": "Playlists"}
-
-    def __init__(self, media_library, thumbnail_dir, settings_store=None, parent=None):
-        super().__init__(parent)
-        self.setObjectName("Page")
-        self._media_library = media_library
-        self._thumbnail_dir = thumbnail_dir
-        self._settings_store = settings_store
-        self._tracks: list[Path] = []
-        self._splitter = None
-        self._playlist_files: dict[str, Path] = {}
-        self._build()
-
-    def _build(self):
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(24, 18, 24, 16)
-        layout.setSpacing(10)
-
-        top = QHBoxLayout()
-        self._search_entry = QLineEdit()
-        self._search_entry.setObjectName("IconButton")
-        self._search_entry.setPlaceholderText(
-            "Search library · title, artist, album, genre…")
-        self._search_entry.textChanged.connect(lambda _text: self._refresh())
-        top.addWidget(self._search_entry, 1)
-
-        self._mode_combo = QTabBar()
-        self._mode_combo.setObjectName("LibraryTabs")
-        for value, label in self.MODES.items():
-            index = self._mode_combo.addTab(label)
-            self._mode_combo.setTabData(index, value)
-        self._mode_combo.currentChanged.connect(lambda _i: self._refresh())
-        top.addWidget(self._mode_combo)
-
-        refresh_btn = QPushButton("Refresh")
-        refresh_btn.setObjectName("IconButton")
-        refresh_btn.clicked.connect(self._on_refresh)
-        top.addWidget(refresh_btn)
-        layout.addLayout(top)
-
-        split = QSplitter(Qt.Horizontal)
-        self._splitter = split
-        self._groups_list = QListWidget()
-        self._groups_list.setObjectName("QueueTree")
-        self._groups_list.setSelectionMode(QAbstractItemView.ExtendedSelection)
-        self._groups_list.itemDoubleClicked.connect(lambda _item: self._add_playlist_groups())
-        self._groups_list.setContextMenuPolicy(Qt.CustomContextMenu)
-        self._groups_list.customContextMenuRequested.connect(self._playlist_group_menu)
-        self._groups_list.currentItemChanged.connect(self._on_group_selected)
-        split.addWidget(self._groups_list)
-
-        self._tracks_list = QListWidget()
-        self._tracks_list.setObjectName("QueueTree")
-        self._tracks_list.setSelectionMode(QAbstractItemView.ExtendedSelection)
-        self._tracks_list.itemDoubleClicked.connect(lambda _item: self._activate_selected())
-        self._tracks_list.setContextMenuPolicy(Qt.CustomContextMenu)
-        self._tracks_list.customContextMenuRequested.connect(
-            self._library_track_context_menu)
-        split.addWidget(self._tracks_list)
-        split.setStretchFactor(0, 2)
-        split.setStretchFactor(1, 5)
-        split.setSizes([260, 720])
-        layout.addWidget(split, 1)
-
-        bottom = QHBoxLayout()
-        self._count_label = QLabel("")
-        self._count_label.setObjectName("NowPlayingMeta")
-        bottom.addWidget(self._count_label)
-        bottom.addStretch()
-        add_btn = QPushButton("Add to queue")
-        add_btn.setObjectName("PrimaryButton")
-        add_btn.clicked.connect(self._add_selected)
-        bottom.addWidget(add_btn)
-        self._add_playlist_btn = QPushButton("Add playlist(s) to queue")
-        self._add_playlist_btn.setObjectName("PrimaryButton")
-        self._add_playlist_btn.clicked.connect(self._add_playlist_groups)
-        bottom.addWidget(self._add_playlist_btn)
-        self._add_btn = add_btn
-        self._new_playlist_btn = QPushButton("New playlist")
-        self._new_playlist_btn.setObjectName("PrimaryButton")
-        self._new_playlist_btn.clicked.connect(
-            lambda: self.playlistNewRequested.emit())
-        bottom.addWidget(self._new_playlist_btn)
-        self._playlist_add_current_btn = QPushButton("Add current media")
-        self._playlist_add_current_btn.setObjectName("IconButton")
-        self._playlist_add_current_btn.clicked.connect(
-            lambda: self.playlistAddCurrentRequested.emit(
-                self._selected_playlist_path()))
-        bottom.addWidget(self._playlist_add_current_btn)
-        self._playlist_remove_btn = QPushButton("Remove selected item")
-        self._playlist_remove_btn.setObjectName("IconButton")
-        self._playlist_remove_btn.clicked.connect(self._remove_playlist_selection)
-        bottom.addWidget(self._playlist_remove_btn)
-        self._playlist_play_btn = QPushButton("Play selected")
-        self._playlist_play_btn.setObjectName("PrimaryButton")
-        self._playlist_play_btn.clicked.connect(self._play_playlist_selection)
-        bottom.addWidget(self._playlist_play_btn)
-        layout.addLayout(bottom)
-
-        if self._settings_store is not None:
-            folder_section = QLabel("WATCHED FOLDERS")
-            folder_section.setObjectName("SidebarSection")
-            layout.addWidget(folder_section)
-            self._folders_widget = QListWidget()
-            self._folders_widget.setObjectName("QueueTree")
-            self._folders_widget.setMaximumHeight(110)
-            layout.addWidget(self._folders_widget)
-            folder_row = QHBoxLayout()
-            add_folder_btn = QPushButton("Add folder…")
-            add_folder_btn.setObjectName("IconButton")
-            add_folder_btn.clicked.connect(self._add_folder)
-            folder_row.addWidget(add_folder_btn)
-            remove_folder_btn = QPushButton("Remove selected")
-            remove_folder_btn.setObjectName("IconButton")
-            remove_folder_btn.clicked.connect(self._remove_folder)
-            folder_row.addWidget(remove_folder_btn)
-            scan_btn = QPushButton("Scan now")
-            scan_btn.setObjectName("IconButton")
-            scan_btn.clicked.connect(self._scan_folders)
-            folder_row.addWidget(scan_btn)
-            folder_row.addStretch()
-            layout.addLayout(folder_row)
-            self._load_folders()
-
-    # --- data ---
-
-    def _query(self) -> str:
-        return str(self._search_entry.text()).strip().casefold()
-
-    def _mode(self) -> str:
-        return str(self._mode_combo.tabData(self._mode_combo.currentIndex()) or "all")
-
-    def _key(self) -> str:
-        return {"artists": "artist", "albums": "album", "genres": "genre"}[self._mode()]
-
-    def _filtered(self, items, query: str):
-        if not query:
-            return items
-        out = []
-        for item in items:
-            meta = item.metadata or {}
-            hay = " ".join(str(meta.get(k) or "") for k in
-                           ("title", "artist", "album_artist", "album", "genre"))
-            hay += " " + item.path.name
-            if query in hay.casefold():
-                out.append(item)
-        return out
-
-    @staticmethod
-    def _track_sort(item):
-        meta = item.metadata or {}
-        track = re.sub(r"\D", "", str(meta.get("track") or ""))
-        return (str(meta.get("album") or "").casefold(),
-                int(track or 0),
-                str(meta.get("title") or "").casefold())
-
-    @staticmethod
-    def _row_text(item):
-        meta = item.metadata or {}
-        title = str(meta.get("title") or item.path.stem)
-        details = " · ".join(str(meta.get(k) or "").strip() for k in
-                             ("artist", "album", "genre") if str(meta.get(k) or "").strip())
-        if details:
-            return f"{title}\n{details}"
-        return title
-
-    def _append_track(self, item):
-        row = QListWidgetItem(self._row_text(item))
-        marker = "★ " if item.favorite else ""
-        row.setText(f"{marker}{self._row_text(item)}")
-        duration = float((item.metadata or {}).get("duration") or 0.0)
-        if duration > 0:
-            minutes, seconds = divmod(int(duration), 60)
-            row.setToolTip(f"{minutes}:{seconds:02d}\n{item.path}")
-        else:
-            row.setToolTip(str(item.path))
-        font = row.font()
-        font.setBold(True)
-        row.setFont(font)
-        self._tracks_list.addItem(row)
-        self._tracks.append(item.path)
-
-    # --- UI flow ---
-
-    def _refresh(self):
-        query = self._query()
-        mode = self._mode()
-        self._add_playlist_btn.setVisible(mode == "playlists")
-        playlist_mode = mode == "playlists"
-        self._add_btn.setVisible(True)
-        self._new_playlist_btn.setVisible(playlist_mode)
-        self._playlist_add_current_btn.setVisible(playlist_mode)
-        self._playlist_remove_btn.setVisible(playlist_mode)
-        self._playlist_play_btn.setVisible(playlist_mode)
-        self._tracks.clear()
-        self._tracks_list.clear()
-        use_groups = mode in ("artists", "albums", "genres", "playlists")
-        self._groups_list.setVisible(use_groups)
-
-        if mode == "all":
-            self._groups_list.clear()
-            items = self._filtered(self._media_library.items(), query)
-            for item in sorted(items, key=self._track_sort):
-                self._append_track(item)
-        elif mode == "favorites":
-            self._groups_list.clear()
-            self._show_favorites()
-            self._count_label.setText(f"{len(self._tracks)} tracks")
-            return
-        elif mode == "playlists":
-            self._scan_playlist_files()
-            self._count_label.setText(f"{len(self._tracks)} tracks")
-            return
-        else:
-            self._groups_list.setEnabled(True)
-            self._rebuild_groups(mode, query)
-            if self._groups_list.count() > 0:
-                self._groups_list.setCurrentRow(0)
-            else:
-                self._count_label.setText("No groups found")
-        self._count_label.setText(f"{len(self._tracks)} tracks")
-
-    def _rebuild_groups(self, mode, query):
-        self._groups_list.blockSignals(True)
-        self._groups_list.clear()
-        if mode == "favorites":
-            self._groups_list.blockSignals(False)
-            return
-        key = self._key()
-        values = [v for v in self._media_library.field_values(key)
-                  if not query or query in v.casefold()]
-        has_unknown = any(not str((item.metadata or {}).get(key) or "").strip()
-                          for item in self._media_library.items())
-        unknown_label = {"artists": "Unknown Artist", "albums": "Unknown Album",
-                         "genres": "Unknown Genre"}.get(mode, "Unknown")
-        if has_unknown and (not query or query in unknown_label.casefold()):
-            values.append("")
-        if mode == "favorites":
-            favorites = {str(i.path) for i in self._media_library.items(favorites_only=True)}
-            values = [v for v in values
-                      if any(str(i.path) in favorites and
-                             str((i.metadata or {}).get(key) or "").casefold() == v.casefold()
-                             for i in self._media_library.items())]
-        if not values:
-            values = []
-        for value in values:
-            row = QListWidgetItem(value if value else unknown_label)
-            row.setData(Qt.UserRole, value)
-            self._groups_list.addItem(row)
-        self._groups_list.blockSignals(False)
-
-    def _on_group_selected(self, current):
-        if current is None:
-            self._tracks_list.clear()
-            self._tracks.clear()
-            return
-        mode = self._mode()
-        if mode == "favorites":
-            self._show_favorites()
-            return
-        if mode == "playlists":
-            self._on_playlist_group_selected(current)
-            return
-        value = str(current.data(Qt.UserRole) or "")
-        key = self._key()
-        query = self._query()
-        if not value:
-            items = [i for i in self._media_library.items()
-                     if not str((i.metadata or {}).get(key) or "").strip()]
-        else:
-            items = self._media_library.by_field(key, value)
-        self._tracks.clear()
-        self._tracks_list.clear()
-        for item in sorted(self._filtered(items, query), key=self._track_sort):
-            self._append_track(item)
-        self._count_label.setText(f"{len(self._tracks)} tracks")
-
-    def _show_favorites(self):
-        favorites = self._media_library.items(favorites_only=True)
-        query = self._query()
-        self._tracks.clear()
-        self._tracks_list.clear()
-        for item in sorted(self._filtered(favorites, query), key=self._track_sort):
-            self._append_track(item)
-        self._count_label.setText(f"{len(self._tracks)} tracks")
-
-    def _scan_playlist_files(self):
-        from casu.playlist import PLAYLIST_SUFFIXES
-        self._groups_list.blockSignals(True)
-        self._groups_list.clear()
-        self._playlist_files.clear()
-        folders = list(self._settings_store.load().watched_folders) if self._settings_store else []
-        if not folders:
-            folders = [str(Path.home())]
-        data = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local/share")) / "mpcasu/youtube-playlists"
-        candidates = list(Path.home().glob("*"))
-        for folder in [*folders, str(data)]:
-            try:
-                candidates.extend(Path(folder).expanduser().rglob("*"))
-            except OSError:
-                continue
-        seen = set()
-        for path in sorted(candidates):
-            try:
-                if path.suffix.lower() not in PLAYLIST_SUFFIXES or not path.is_file():
-                    continue
-                path = path.resolve()
-                if path in seen: continue
-                seen.add(path)
-                if self._query() and self._query() not in path.stem.casefold(): continue
-                label = path.stem
-                counter = 2
-                while label in self._playlist_files:
-                    label = f"{path.stem} ({counter})"
-                    counter += 1
-                self._playlist_files[label] = path
-                row = QListWidgetItem(label)
-                row.setData(Qt.UserRole, path)
-                row.setToolTip(str(path))
-                self._groups_list.addItem(row)
-            except OSError:
-                continue
-        self._groups_list.blockSignals(False)
-        self._groups_list.setEnabled(True)
-        if self._groups_list.count(): self._groups_list.setCurrentRow(0)
-        else: self._count_label.setText("No playlist files found")
-
-    def _on_playlist_group_selected(self, current):
-        self._tracks.clear()
-        self._tracks_list.clear()
-        if current is None: return
-        path = self._playlist_files.get(current.text())
-        if path is None: return
-        try:
-            entries = self._parse_playlist_file(path)
-        except (OSError, ValueError, PlaylistError) as error:
-            self._count_label.setText(f"Cannot read playlist: {error}")
-            return
-        titles = playlist_names(path)
-        for source in entries:
-            label = titles.get(str(source)) or (source.name if isinstance(source, Path) else str(source))
-            row = QListWidgetItem(label)
-            row.setData(Qt.UserRole, source)
-            row.setToolTip(str(source))
-            self._tracks_list.addItem(row)
-            self._tracks.append(source)
-        self._count_label.setText(f"{len(self._tracks)} tracks")
-
-    @staticmethod
-    def _parse_playlist_file(path: Path) -> list:
-        return list(load_playlist_file(path).items)
-
-    def _add_playlist_groups(self):
-        if self._mode() != "playlists": return
-        selected = self._groups_list.selectedItems()
-        if not selected and self._groups_list.currentItem():
-            selected = [self._groups_list.currentItem()]
-        paths = [self._playlist_files[item.text()] for item in selected if item.text() in self._playlist_files]
-        if paths: self.addRequested.emit(paths)
-
-    def _playlist_group_menu(self, position):
-        if self._mode() != "playlists": return
-        item = self._groups_list.itemAt(position)
-        if item is None: return
-        if not item.isSelected(): self._groups_list.setCurrentItem(item)
-        menu = QMenu(self)
-        menu.addAction("Add playlist(s) to queue", self._add_playlist_groups)
-        menu.exec(self._groups_list.viewport().mapToGlobal(position))
-
-    def _add_selected(self, *_args):
-        selected = self._tracks_list.selectedItems()
-        if not selected:
-            item = self._tracks_list.currentItem()
-            if item is not None:
-                selected = [item]
-        paths = []
-        for item in selected:
-            row = self._tracks_list.row(item)
-            if 0 <= row < len(self._tracks):
-                paths.append(self._tracks[row])
-        if paths:
-            self.addRequested.emit(paths)
-        elif self._mode() == "playlists":
-            self._add_playlist_groups()
-
-    def show_playlists(self):
-        for index in range(self._mode_combo.count()):
-            if self._mode_combo.tabData(index) == "playlists":
-                self._mode_combo.setCurrentIndex(index)
-                break
-        self._refresh()
-
-    def _selected_playlist_path(self):
-        item = self._groups_list.currentItem()
-        return self._playlist_files.get(item.text()) if item is not None else None
-
-    def _selected_playlist_entries(self) -> list:
-        entries = []
-        for item in self._tracks_list.selectedItems():
-            row = self._tracks_list.row(item)
-            if 0 <= row < len(self._tracks):
-                entries.append(self._tracks[row])
-        return entries
-
-    def _activate_selected(self):
-        if self._mode() == "playlists":
-            self._play_playlist_selection()
-        else:
-            self._add_selected()
-
-    def _play_playlist_selection(self):
-        entries = self._selected_playlist_entries()
-        if entries:
-            self.addRequested.emit(entries)
-            self.playlistPlayRequested.emit(entries[0])
-
-    def _remove_playlist_selection(self):
-        playlist = self._selected_playlist_path()
-        entries = self._selected_playlist_entries()
-        if playlist is not None and entries:
-            self.playlistRemoveRequested.emit(playlist, entries)
-
-    def _library_track_context_menu(self, position):
-        item = self._tracks_list.itemAt(position)
-        if item is None:
-            return
-        selected_items = self._tracks_list.selectedItems()
-        if not selected_items:
-            selected_items = [item]
-        paths = []
-        for sel in selected_items:
-            r = self._tracks_list.row(sel)
-            if 0 <= r < len(self._tracks):
-                paths.append(self._tracks[r])
-        if not paths:
-            return
-        menu = QMenu(self)
-        if len(paths) == 1:
-            meta_item = None
-            for mi in self._media_library.items():
-                if mi.path == paths[0]:
-                    meta_item = mi
-                    break
-            is_fav = bool(meta_item.favorite) if meta_item else False
-            fav_text = "Remove ★" if is_fav else "Add ★ Favorite"
-            menu.addAction(fav_text, lambda: self._toggle_favorite(paths[0], self._tracks_list.row(item)))
-        else:
-            any_fav = any(
-                bool(self._media_library.get(p).favorite)
-                for p in paths if self._media_library.get(p))
-            fav_text = "Remove ★" if any_fav else "Add ★ Favorite"
-            menu.addAction(f"{fav_text} ({len(paths)})", lambda: self._toggle_favorite_multi(paths, not any_fav))
-        menu.addSeparator()
-        add_text = "Add to queue" if len(paths) == 1 else f"Add to queue ({len(paths)})"
-        menu.addAction(add_text, lambda: self.addRequested.emit(paths))
-        menu.exec(self._tracks_list.viewport().mapToGlobal(position))
-
-    def _toggle_favorite(self, path, row):
-        item = self._media_library.get(path)
-        current = bool(item.favorite) if item else False
-        self._media_library.set_favorite(path, not current)
-        self._refresh()
-
-    def _toggle_favorite_multi(self, paths, state):
-        for p in paths:
-            self._media_library.set_favorite(p, state)
-        self._refresh()
-
-    def _on_refresh(self):
-        self.refreshRequested.emit()
-        self._refresh()
-
-    # --- watched folders ---
-
-    def _load_folders(self):
-        self._folders_widget.blockSignals(True)
-        self._folders_widget.clear()
-        settings = self._settings_store.load()
-        for folder in settings.watched_folders:
-            self._folders_widget.addItem(str(folder))
-        self._folders_widget.blockSignals(False)
-
-    def _add_folder(self):
-        from PySide6.QtWidgets import QFileDialog
-        folder = QFileDialog.getExistingDirectory(self, "Add library folder")
-        if not folder:
-            return
-        settings = self._settings_store.load()
-        folders = list(settings.watched_folders)
-        if folder in folders:
-            return
-        folders.append(folder)
-        self._settings_store.save(replace(settings, watched_folders=folders))
-        self._load_folders()
-        self.refreshRequested.emit()
-
-    def _remove_folder(self):
-        row = self._folders_widget.currentRow()
-        if row < 0:
-            return
-        folder = self._folders_widget.item(row).text()
-        settings = self._settings_store.load()
-        folders = [f for f in settings.watched_folders if f != folder]
-        self._settings_store.save(replace(settings, watched_folders=folders))
-        self._load_folders()
-        self.refreshRequested.emit()
-
-    def _scan_folders(self):
-        self.refreshRequested.emit()
-
-
-class OptionsPage(QFrame):
-    """In-window options area (replaces the settings popup)."""
-
-    applied = Signal(object)
-    actionRequested = Signal(str)
-    backRequested = Signal()
-
-    def __init__(self, settings_store, parent=None):
-        super().__init__(parent)
-        self.setObjectName("Page")
-        self._settings_store = settings_store
-        self._build()
-
-    def _build(self):
-        outer = QVBoxLayout(self)
-        outer.setContentsMargins(20, 18, 20, 18)
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QFrame.NoFrame)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        content = QWidget()
-        content.setStyleSheet("background: transparent;")
-        layout = QVBoxLayout(content)
-        layout.setContentsMargins(4, 4, 4, 4)
-        layout.setSpacing(14)
-
-        def section(label_text):
-            label = QLabel(label_text)
-            label.setObjectName("SidebarSection")
-            label.setContentsMargins(0, 0, 0, 0)
-            layout.addWidget(label)
-
-        settings = self._settings_store.load()
-
-        section("PLAYBACK")
-        row = QHBoxLayout()
-        row.addWidget(QLabel("Volume"))
-        self._volume_spin = QSpinBox()
-        self._volume_spin.setObjectName("IconButton")
-        self._volume_spin.setRange(0, 200)
-        self._volume_spin.setValue(settings.volume)
-        row.addWidget(self._volume_spin)
-        row.addSpacing(18)
-        row.addWidget(QLabel("Rate"))
-        self._rate_spin = QDoubleSpinBox()
-        self._rate_spin.setObjectName("IconButton")
-        self._rate_spin.setRange(0.25, 4.0)
-        self._rate_spin.setSingleStep(0.25)
-        self._rate_spin.setValue(settings.rate)
-        row.addWidget(self._rate_spin)
-        row.addStretch()
-        layout.addLayout(row)
-        self._muted_cb = QCheckBox("Muted")
-        self._muted_cb.setChecked(settings.muted)
-        layout.addWidget(self._muted_cb)
-        self._resume_cb = QCheckBox("Resume playback on startup")
-        self._resume_cb.setChecked(settings.resume_playback)
-        layout.addWidget(self._resume_cb)
-
-        section("VISUALIZER")
-        viz_row = QHBoxLayout()
-        self._viz_combo = QComboBox()
-        self._viz_combo.setObjectName("IconButton")
-        for label, value in [("Waveform", "waveform"), ("Off", "off")]:
-            self._viz_combo.addItem(label, value)
-        index = self._viz_combo.findData(settings.visualizer)
-        self._viz_combo.setCurrentIndex(max(0, index))
-        viz_row.addWidget(self._viz_combo)
-        viz_row.addStretch()
-        layout.addLayout(viz_row)
-
-        section("CACHE")
-        cache_row = QHBoxLayout()
-        self._cache_spin = QSpinBox()
-        self._cache_spin.setObjectName("IconButton")
-        self._cache_spin.setRange(64, 8192)
-        self._cache_spin.setSuffix(" MiB")
-        self._cache_spin.setValue(settings.cache_limit_mib)
-        cache_row.addWidget(self._cache_spin)
-        clear_btn = QPushButton("Clear yt-dlp temp cache")
-        clear_btn.setObjectName("IconButton")
-        clear_btn.clicked.connect(lambda: self.actionRequested.emit("clear-cache"))
-        cache_row.addWidget(clear_btn)
-        cache_row.addStretch()
-        layout.addLayout(cache_row)
-
-        section("LIBRARY FOLDERS")
-        folders_hint = QLabel(
-            "Folders whose audio/video files are indexed into the library "
-            "(tags and file names are read for album/track/artist/genre).")
-        folders_hint.setObjectName("NowPlayingMeta")
-        folders_hint.setWordWrap(True)
-        layout.addWidget(folders_hint)
-        self._folders_list = QListWidget()
-        self._folders_list.setObjectName("QueueTree")
-        self._folders_list.setMinimumHeight(110)
-        self._folders_list.setMaximumHeight(180)
-        for folder in settings.watched_folders:
-            self._folders_list.addItem(str(folder))
-        layout.addWidget(self._folders_list)
-        folder_row = QHBoxLayout()
-        add_folder_btn = QPushButton("Add folder…")
-        add_folder_btn.setObjectName("IconButton")
-        add_folder_btn.clicked.connect(self._add_library_folder)
-        folder_row.addWidget(add_folder_btn)
-        remove_folder_btn = QPushButton("Remove selected")
-        remove_folder_btn.setObjectName("IconButton")
-        remove_folder_btn.clicked.connect(self._remove_library_folder)
-        folder_row.addWidget(remove_folder_btn)
-        scan_btn = QPushButton("Scan now")
-        scan_btn.setObjectName("IconButton")
-        scan_btn.clicked.connect(lambda: self.actionRequested.emit("refresh-db"))
-        folder_row.addWidget(scan_btn)
-        folder_row.addStretch()
-        layout.addLayout(folder_row)
-
-        section("RECORDINGS & SNAPSHOTS")
-        rec_row = QHBoxLayout()
-        self._recordings_entry = QLineEdit()
-        self._recordings_entry.setObjectName("IconButton")
-        self._recordings_entry.setPlaceholderText("Default folder for recordings and snapshots (empty = ~/Videos/MPCASU)")
-        self._recordings_entry.setText(settings.recordings_dir)
-        rec_row.addWidget(self._recordings_entry, 1)
-        rec_btn = QPushButton("Choose folder…")
-        rec_btn.setObjectName("IconButton")
-        rec_btn.clicked.connect(self._pick_recordings_dir)
-        rec_row.addWidget(rec_btn)
-        layout.addLayout(rec_row)
-        split_row = QHBoxLayout()
-        split_row.addWidget(QLabel("Recording split"))
-        self._split_mode_combo = QComboBox()
-        self._split_mode_combo.setObjectName("IconButton")
-        for label, value in (("Single recording", "continuous"),
-                             ("By time", "time"),
-                             ("At track changes", "track"),
-                             ("At title/tag changes", "tags")):
-            self._split_mode_combo.addItem(label, value)
-        self._split_mode_combo.setCurrentIndex(max(
-            0, self._split_mode_combo.findData(settings.record_split_mode)))
-        split_row.addWidget(self._split_mode_combo)
-        self._split_spin = QSpinBox()
-        self._split_spin.setObjectName("IconButton")
-        self._split_spin.setRange(0, 24 * 60)
-        self._split_spin.setSuffix(" min")
-        self._split_spin.setSpecialValueText("no splitting")
-        self._split_spin.setValue(settings.record_split_minutes)
-        self._split_spin.setEnabled(settings.record_split_mode == "time")
-        self._split_mode_combo.currentIndexChanged.connect(
-            lambda _i: self._split_spin.setEnabled(
-                self._split_mode_combo.currentData() == "time"))
-        split_row.addWidget(self._split_spin)
-        split_row.addSpacing(12)
-        split_row.addWidget(QLabel("Format"))
-        self._format_combo = QComboBox()
-        self._format_combo.setObjectName("IconButton")
-        for fmt in ("mkv", "mp4", "ts", "webm", "ogg", "mp3", "flac", "wav"):
-            self._format_combo.addItem(fmt)
-        index = self._format_combo.findText(settings.record_format)
-        self._format_combo.setCurrentIndex(max(0, index))
-        split_row.addWidget(self._format_combo)
-        split_row.addStretch()
-        layout.addLayout(split_row)
-
-        section("LEGAL")
-        self._consent_cb = QCheckBox("I understand that YouTube uses yt-dlp and Spotify uses spotDL (personal use only)")
-        self._consent_cb.setChecked(settings.ytdlp_consent)
-        layout.addWidget(self._consent_cb)
-
-        section("PROVIDERS")
-        providers = QLabel(self._provider_status())
-        providers.setObjectName("NowPlayingMeta")
-        providers.setWordWrap(True)
-        providers.setTextFormat(Qt.PlainText)
-        layout.addWidget(providers)
-
-        apply_row = QHBoxLayout()
-        apply_row.addStretch()
-        apply_btn = QPushButton("Apply")
-        apply_btn.setObjectName("PrimaryButton")
-        apply_btn.clicked.connect(self._apply)
-        apply_row.addWidget(apply_btn)
-        layout.addLayout(apply_row)
-        layout.addStretch()
-
-        scroll.setWidget(content)
-        outer.addWidget(scroll, 1)
-
-    def _apply(self):
-        settings = self._settings_store.load()
-        updated = replace(settings,
-                          volume=self._volume_spin.value(),
-                          muted=self._muted_cb.isChecked(),
-                          rate=self._rate_spin.value(),
-                          ytdlp_consent=self._consent_cb.isChecked(),
-                          visualizer=str(self._viz_combo.currentData()),
-                          resume_playback=self._resume_cb.isChecked(),
-                          cache_limit_mib=self._cache_spin.value(),
-                          recordings_dir=self._recordings_entry.text().strip(),
-                          record_split_minutes=self._split_spin.value(),
-                          record_split_mode=str(self._split_mode_combo.currentData()),
-                          record_format=str(self._format_combo.currentText()),
-                          watched_folders=self._library_folders())
-        self._settings_store.save(updated)
-        self.applied.emit(updated)
-
-    def _pick_recordings_dir(self):
-        folder = QFileDialog.getExistingDirectory(self, "Recordings & snapshots folder")
-        if folder:
-            self._recordings_entry.setText(folder)
-
-    def _library_folders(self) -> list[str]:
-        return [self._folders_list.item(i).text().strip()
-                for i in range(self._folders_list.count())
-                if self._folders_list.item(i).text().strip()]
-
-    def _add_library_folder(self):
-        folder = QFileDialog.getExistingDirectory(self, "Add library folder")
-        if not folder:
-            return
-        folders = self._library_folders()
-        if folder in folders:
-            return
-        self._folders_list.addItem(folder)
-        self._folders_list.setCurrentRow(self._folders_list.count() - 1)
-
-    def _remove_library_folder(self):
-        row = self._folders_list.currentRow()
-        if row >= 0:
-            self._folders_list.takeItem(row)
-
-    @staticmethod
-    def _provider_status() -> str:
-        import shutil
-        from glob import glob
-        vlc = bool(shutil.which("vlc")) or bool(glob("/usr/lib/*/libvlc.so*"))
-        lines = [
-            f"libVLC (legacy playback): {'✓' if vlc else '✗ missing'}",
-            f"FFmpeg (convert/analysis): {'✓' if shutil.which('ffmpeg') else '✗ missing'}",
-            f"yt-dlp (YouTube provider): {'✓' if shutil.which('yt-dlp') else '✗ missing'}",
-        ]
-        from casu.spotify import spotdl_binary
-        if spotdl_binary():
-            lines.append("spotDL (Spotify provider): ✓")
-        else:
-            lines.append("spotDL (Spotify provider): ✗ not installed — "
-                         "python3 -m venv /opt/casu-spotdl && "
-                         "/opt/casu-spotdl/bin/pip install spotdl")
-        lines.append(f"Deno (optional spotDL helper): {'✓' if shutil.which('deno') else '– optional'}")
-        return "\n".join(lines)
-
-    def reload(self):
-        settings = self._settings_store.load()
-        self._volume_spin.setValue(settings.volume)
-        self._muted_cb.setChecked(settings.muted)
-        self._rate_spin.setValue(settings.rate)
-        self._resume_cb.setChecked(settings.resume_playback)
-        self._consent_cb.setChecked(settings.ytdlp_consent)
-        self._cache_spin.setValue(settings.cache_limit_mib)
-        self._recordings_entry.setText(settings.recordings_dir)
-        self._split_spin.setValue(settings.record_split_minutes)
-        self._split_mode_combo.setCurrentIndex(max(
-            0, self._split_mode_combo.findData(settings.record_split_mode)))
-        index = self._format_combo.findText(settings.record_format)
-        self._format_combo.setCurrentIndex(max(0, index))
-        index = self._viz_combo.findData(settings.visualizer)
-        self._viz_combo.setCurrentIndex(max(0, index))
-        self._folders_list.blockSignals(True)
-        self._folders_list.clear()
-        for folder in settings.watched_folders:
-            self._folders_list.addItem(str(folder))
-        self._folders_list.blockSignals(False)
-
-
-class EpgPage(QFrame):
-    """In-window Live TV / EPG guide (M3U + XMLTV), web-style channel cards."""
-
-    channelActivated = Signal(object)
-    backRequested = Signal()
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setObjectName("Page")
-        self._catalog = None
-        self._guide = None
-        self._build()
-
-    def _build(self):
-        outer = QVBoxLayout(self)
-        outer.setContentsMargins(24, 18, 24, 16)
-        outer.setSpacing(10)
-
-        source_row = QHBoxLayout()
-        self._source_entry = QLineEdit()
-        self._source_entry.setPlaceholderText("M3U / XMLTV path or http(s) URL…")
-        source_row.addWidget(self._source_entry, 1)
-        load_file_btn = QPushButton("Load file")
-        load_file_btn.setObjectName("IconButton")
-        load_file_btn.clicked.connect(self._load_file)
-        source_row.addWidget(load_file_btn)
-        load_url_btn = QPushButton("Load URL")
-        load_url_btn.setObjectName("IconButton")
-        load_url_btn.clicked.connect(self._load_url)
-        source_row.addWidget(load_url_btn)
-        outer.addLayout(source_row)
-
-        self._status = QLabel("Load an Extended-M3U playlist (and optional XMLTV guide) to browse channels.")
-        self._status.setObjectName("NowPlayingMeta")
-        outer.addWidget(self._status)
-
-        filters = QHBoxLayout()
-        self._channel_search = QLineEdit()
-        self._channel_search.setPlaceholderText("Search channels or groups…")
-        self._channel_group = QComboBox()
-        self._channel_group.addItem("All groups", "")
-        self._channel_count = QLabel()
-        self._channel_page = 0
-        self._previous_channels = QPushButton("Previous")
-        self._next_channels = QPushButton("Next")
-        filters.addWidget(self._channel_group)
-        filters.addWidget(self._channel_search, 1)
-        filters.addWidget(self._channel_count)
-        filters.addWidget(self._previous_channels)
-        filters.addWidget(self._next_channels)
-        outer.addLayout(filters)
-        self._channel_search.textChanged.connect(self._filter_channels)
-        self._channel_group.currentIndexChanged.connect(self._filter_channels)
-        self._previous_channels.clicked.connect(lambda: self._turn_channels(-1))
-        self._next_channels.clicked.connect(lambda: self._turn_channels(1))
-
-        self._scroll = QScrollArea()
-        self._scroll.setWidgetResizable(True)
-        self._scroll.setFrameShape(QFrame.NoFrame)
-        self._scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOn)
-        self._grid_host = QWidget()
-        self._grid_host.setStyleSheet("background: transparent;")
-        self._grid = QGridLayout(self._grid_host)
-        self._grid.setSpacing(8)
-        self._scroll.setWidget(self._grid_host)
-        outer.addWidget(self._scroll, 1)
-
-    def _load_file(self):
-        path, _ = QFileDialog.getOpenFileName(
-            self, "Load playlist / guide", str(Path.home()),
-            "Playlists & guides (*.m3u *.m3u8 *.pls *.xspf *.wpl *.asx *.xml *.xmltv);;All files (*)")
-        if path:
-            self._load_source(path)
-
-    def _load_url(self):
-        source = self._source_entry.text().strip()
-        if not source:
-            self._status.setText("Please enter an IPTV playlist URL.")
-            return
-        self._load_source(source)
-
-    def _load_source(self, source: str):
-        source = str(source or "").strip()
-        if not source:
-            self._status.setText("Please enter an IPTV playlist URL.")
-            return
-        try:
-            if source.endswith((".xml", ".xmltv")):
-                from casu.epg import load_xmltv, fetch_xmltv
-                self._guide = fetch_xmltv(source) if source.startswith(("http://", "https://")) else load_xmltv(source)
-                self._status.setText(f"Guide loaded: {len(self._guide.entries) if hasattr(self._guide, 'entries') else ''} programmes")
-                self._sync_host_epg()
-                self._render()
-                return
-            from casu.epg import load_m3u, fetch_m3u
-            self._catalog = fetch_m3u(source) if source.startswith(("http://", "https://")) else load_m3u(source)
-            self._status.setText(f"{len(self._catalog.channels)} channels loaded")
-            self._sync_host_epg()
-            self._render()
-        except Exception as exc:  # noqa: BLE001 - show any loader failure inline
-            self._status.setText(f"Load failed: {exc}")
-
-    def _sync_host_epg(self):
-        host = self.parent()
-        if host is None or not hasattr(host, "_epg_catalog"):
-            return
-        host._epg_catalog = self._catalog
-        host._epg_guide = self._guide
-        host._diagnostics_bar.set_values(guide=host._epg_now_next())
-
-    def _now_next(self, channel):
-        if self._guide is None:
-            return ""
-        current, upcoming = self._guide.now_next(getattr(channel, "epg_id", "") or channel.name)
-        parts = []
-        if current is not None: parts.append(f"NOW · {current.title}")
-        if upcoming is not None: parts.append(f"NEXT · {upcoming.title}")
-        return "  |  ".join(parts)
-
-    def _filter_channels(self, *_):
-        self._channel_page = 0
-        self._render()
-
-    def _turn_channels(self, direction):
-        self._channel_page = max(0, self._channel_page + direction)
-        self._render()
-
-    def _render(self):
-        while self._grid.count():
-            item = self._grid.takeAt(0)
-            widget = item.widget()
-            if widget is not None:
-                widget.deleteLater()
-        if self._catalog is None:
-            return
-        groups = sorted({getattr(ch, "group", "") or "Ungrouped" for ch in self._catalog.channels})
-        selected = self._channel_group.currentData() or ""
-        if groups != [self._channel_group.itemData(i) for i in range(1, self._channel_group.count())]:
-            self._channel_group.blockSignals(True)
-            self._channel_group.clear()
-            self._channel_group.addItem("All groups", "")
-            for group in groups: self._channel_group.addItem(group, group)
-            self._channel_group.setCurrentIndex(max(0, self._channel_group.findData(selected)))
-            self._channel_group.blockSignals(False)
-            selected = self._channel_group.currentData() or ""
-        query = self._channel_search.text().strip().casefold()
-        channels = [ch for ch in self._catalog.channels
-                    if (not selected or (getattr(ch, "group", "") or "Ungrouped") == selected)
-                    and (not query or query in (ch.name + " " + (getattr(ch, "group", "") or "")).casefold())]
-        self._channel_page = min(self._channel_page, max(0, (len(channels) - 1) // 100))
-        start = self._channel_page * 100
-        self._channel_count.setText(f"{len(channels)} channels · {self._channel_page + 1}/{max(1, (len(channels) + 99) // 100)}")
-        self._previous_channels.setEnabled(start > 0)
-        self._next_channels.setEnabled(start + 100 < len(channels))
-        for index, channel in enumerate(channels[start:start + 100]):
-            card = QFrame()
-            card.setObjectName("EpgChannel")
-            card.setCursor(Qt.PointingHandCursor)
-            cl = QVBoxLayout(card)
-            cl.setContentsMargins(12, 10, 12, 10)
-            name = QLabel(channel.name)
-            name.setObjectName("NowPlayingTitle")
-            name.setStyleSheet("font-size: 16px;")
-            name.setWordWrap(True)
-            cl.addWidget(name)
-            now = self._now_next(channel)
-            meta = QLabel(now or (getattr(channel, "group", "") or ""))
-            meta.setObjectName("NowPlayingMeta")
-            meta.setWordWrap(True)
-            cl.addWidget(meta)
-            card.mousePressEvent = lambda event, ch=channel: self.channelActivated.emit(ch)
-            self._grid.addWidget(card, index, 0)
-
-
-class AboutPage(QFrame):
-    """In-window about view (no popup)."""
-
-    backRequested = Signal()
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setObjectName("Page")
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(24, 24, 24, 24)
-        layout.setAlignment(Qt.AlignCenter)
-
-        brand = QLabel("MPCASU")
-        brand.setObjectName("BrandName")
-        brand.setAlignment(Qt.AlignCenter)
-        layout.addWidget(brand)
-        sub = QLabel("PLAYER")
-        sub.setObjectName("BrandSub")
-        sub.setAlignment(Qt.AlignCenter)
-        layout.addWidget(sub)
-        layout.addSpacing(12)
-        info = QLabel("Version 7.0.0\nMedia Player for CASU & Legacy Media\nIn-process playback · No external player")
-        info.setObjectName("NowPlayingMeta")
-        info.setAlignment(Qt.AlignCenter)
-        layout.addWidget(info)
-        layout.addSpacing(12)
-        note = QLabel("Design inspired by VLC and Webamp — independent original code.\nAnti-Capitalist License 1.4 · Lino Casu")
-        note.setObjectName("NowPlayingMeta")
-        note.setAlignment(Qt.AlignCenter)
-        note.setWordWrap(True)
-        layout.addWidget(note)
-class _ThreadBridge(QObject):
-    """Marshals worker-thread results onto the Qt event loop (no popups)."""
-
-    resultReady = Signal(object)
-    errorReady = Signal(object)
-
-
-
-class SourcesView(QFrame):
-    """In-window view for YouTube/Spotify search and network stream URLs.
-
-    Replaces modal dialogs: consent gate, search entry, yt-dlp result list
-    and status line all live inside the main window.
-    """
-
-    MODES = {
-        "youtube": {
-            "title": "YOUTUBE",
-            "hint": "YouTube URL or search term — e.g. https://www.youtube.com/watch?v=…",
-            "search": True,
-            "web": False,
-        },
-        "url": {
-            "title": "NETWORK STREAM",
-            "hint": "HTTP(S), HLS, RTSP, RTP, UDP, FTP or SMB URL",
-            "search": False,
-            "web": False,
-        },
-    }
-
-    sourceActivated = Signal(object)
-    # Emitted with a flat list of SearchResult-style objects (individual
-    # YouTube videos, expanded from playlists and/or several pasted URLs) that
-    # the main window drops straight into the queue.
-    queueItemsRequested = Signal(object)
-    consentAccepted = Signal()
-    closeRequested = Signal()
-    webPlayerRequested = Signal(str, str, str)  # provider, query, url
-
-    def __init__(self, settings_store, parent=None):
-        super().__init__(parent)
-        self.setObjectName("SourcesView")
-        self._settings_store = settings_store
-        self._mode = "youtube"
-        self._results: list = []
-        self._searching = False
-        self._thumb_jobs = []
-        self._bridge = _ThreadBridge()
-        self._bridge.resultReady.connect(self._present_results)
-        self._bridge.errorReady.connect(self._present_error)
-        self._queue_bridge = _ThreadBridge()
-        self._queue_bridge.resultReady.connect(self._present_queue_items)
-        self._queue_bridge.errorReady.connect(self._present_error)
-        self._thumb_bridge = _ThreadBridge()
-        self._thumb_bridge.resultReady.connect(self._apply_thumb)
-        self._build()
-
-    def _build(self):
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(24, 18, 24, 16)
-        layout.setSpacing(10)
-
-        self._consent_frame = QFrame()
-        self._consent_frame.setObjectName("Panel")
-        cf_layout = QVBoxLayout(self._consent_frame)
-        cf_layout.setContentsMargins(14, 12, 14, 12)
-        cf_layout.setSpacing(8)
-        notice = QLabel(
-            "Legal notice — YouTube search/playback uses yt-dlp (GNU GPL); "
-            "Spotify uses spotDL: Spotify metadata matched on YouTube "
-            "(metadata → match → YouTube audio source).\n"
-            "Stream URLs are resolved temporarily and never stored or "
-            "redistributed. Personal use only.")
-        notice.setObjectName("NowPlayingMeta")
-        notice.setWordWrap(True)
-        cf_layout.addWidget(notice)
-        accept_btn = QPushButton("Accept and enable yt-dlp features")
-        accept_btn.setObjectName("NavItem")
-        accept_btn.setStyleSheet(
-            f"background-color: {PALETTE.accent}; color: {PALETTE.text_on_accent}; font-weight: 600;")
-        accept_btn.clicked.connect(self._accept_consent)
-        cf_layout.addWidget(accept_btn, 0, Qt.AlignLeft)
-        layout.addWidget(self._consent_frame)
-
-        entry_row = QHBoxLayout()
-        self._entry = QLineEdit()
-        self._entry.setFixedHeight(34)
-        self._entry.returnPressed.connect(self._open_typed)
-        entry_row.addWidget(self._entry, 1)
-        self._youtube_search_type = QComboBox()
-        self._youtube_search_type.setObjectName("IconButton")
-        self._youtube_search_type.addItem("Videos", "videos")
-        self._youtube_search_type.addItem("Playlists", "playlists")
-        entry_row.addWidget(self._youtube_search_type)
-        self._go_btn = QPushButton("Play / search")
-        self._go_btn.setObjectName("NavItem")
-        self._go_btn.setStyleSheet(
-            f"background-color: {PALETTE.accent}; color: {PALETTE.text_on_accent}; font-weight: 600;")
-        self._go_btn.clicked.connect(self._open_typed)
-        entry_row.addWidget(self._go_btn)
-        layout.addLayout(entry_row)
-
-        self._list = QListWidget()
-        self._list.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOn)
-        self._list.itemDoubleClicked.connect(
-            lambda item: self._play_row(self._list.row(item)))
-        layout.addWidget(self._list, 1)
-
-        self._status = QLabel("Search uses yt-dlp (GNU GPL) · personal use only")
-        self._status.setObjectName("NowPlayingMeta")
-        self._status.setStyleSheet(f"color: {PALETTE.text_faint};")
-        layout.addWidget(self._status)
-
-    def set_mode(self, mode: str):
-        if mode not in self.MODES:
-            mode = "youtube"
-        self._mode = mode
-        spec = self.MODES[mode]
-        self._entry.setPlaceholderText(spec["hint"])
-        self._entry.clear()
-        self._list.clear()
-        self._results = []
-        self._searching = False
-        self._go_btn.setText("Play / search" if spec["search"] else "Play")
-        self._youtube_search_type.setVisible(mode == "youtube")
-        # The yt-dlp consent gate only applies to YouTube search.
-        self._consent_frame.setVisible(
-            mode == "youtube" and not self._consent_given())
-        if spec["search"]:
-            self._status.setText("Search uses yt-dlp (GNU GPL) · personal use only")
-        else:
-            self._status.setText("Opens directly in the internal libVLC backend — no external player")
-        self._entry.setFocus()
-
-    def _consent_given(self) -> bool:
-        try:
-            return bool(self._settings_store.load().ytdlp_consent)
-        except (OSError, ValueError, TypeError):
-            return False
-
-    def _accept_consent(self):
-        try:
-            settings = self._settings_store.load()
-            self._settings_store.save(replace(settings, ytdlp_consent=True))
-        except (OSError, ValueError, TypeError):
-            pass
-        self._consent_frame.setVisible(False)
-        self.consentAccepted.emit()
-
-    def _open_typed(self):
-        text = self._entry.text().strip()
-        if not text:
-            return
-        # A free-form YouTube field: several videos and/or complete playlists
-        # separated by commas/line breaks expand straight into the queue so
-        # shuffle/repeat act per-video (Windows/Linux parity).
-        if self._is_expandable_youtube(text):
-            self._expand_youtube_input(text)
-            return
-        is_url = text.startswith(("http://", "https://", "rtsp://", "rtmp://",
-                                  "udp://", "rtp://", "ftp://", "smb://"))
-        if not is_url and self.MODES[self._mode]["search"]:
-            self._run_search(text)
-            return
-        self.sourceActivated.emit(text)
-
-    def _is_expandable_youtube(self, text: str) -> bool:
-        from casu.search import split_youtube_input, youtube_playlist_id
-        tokens = split_youtube_input(text)
-        if not tokens:
-            return False
-        youtube = [t for t in tokens if is_youtube_url(t)]
-        if not youtube:
-            return False
-        # A single plain video URL keeps the existing one-shot path; anything
-        # with several entries (comma/line separated) or a playlist link goes
-        # through the queue expansion.
-        return len(youtube) > 1 or any(youtube_playlist_id(t) for t in youtube)
-
-    def _expand_youtube_input(self, text: str):
-        if self._searching:
-            return
-        self._searching = True
-        self._list.clear()
-        self._results = []
-        self._status.setText("Expanding YouTube into the queue…")
-
-        def worker():
-            from casu.search import SearchError
-            from casu.youtube_groups import expand_queue_input
-            try:
-                found = expand_queue_input(text)
-            except SearchError as exc:
-                self._queue_bridge.errorReady.emit(str(exc))
-            else:
-                self._queue_bridge.resultReady.emit(found)
-        threading.Thread(target=worker, daemon=True).start()
-
-    def _present_queue_items(self, found):
-        self._searching = False
-        self.queueItemsRequested.emit(list(found))
-        self._status.setText(
-            f"{len(found)} video(s)/playlist(s) added to the queue")
-
-    def _expand_spotify_url(self, url: str):
-        if self._searching:
-            return
-        self._searching = True
-        self._list.clear()
-        self._results = []
-        self._status.setText("Expanding Spotify playlist via spotDL…")
-
-        def worker():
-            from casu.search import SearchResult
-            try:
-                found = [SearchResult(
-                    title=r.title, url=r.url, duration=r.duration,
-                    uploader=r.artist or "Spotify", source="spotify")
-                    for r in expand_spotify(url)]
-            except SpotifyError as exc:
-                self._bridge.errorReady.emit(str(exc))
-            else:
-                self._bridge.resultReady.emit(found)
-        threading.Thread(target=worker, daemon=True).start()
-
-    def _expand_youtube_playlist(self, url: str, title: str = ""):
-        if self._searching:
-            return
-        self._searching = True
-        self._list.clear()
-        self._results = []
-        self._status.setText("Expanding YouTube playlist…")
-
-        def worker():
-            from casu.search import SearchError
-            from casu.youtube_groups import expand_queue_input
-            try:
-                found = expand_queue_input(url, title=title)
-            except SearchError as exc:
-                self._queue_bridge.errorReady.emit(str(exc))
-            else:
-                self._queue_bridge.resultReady.emit(found)
-        threading.Thread(target=worker, daemon=True).start()
-
-    def _fetch_spotify_handoff(self, url: str):
-        self._open_web_player("spotify", url=url)
-
-    def _run_search(self, query: str):
-        if self._searching:
-            return
-        self._searching = True
-        self._list.clear()
-        self._results = []
-        if self._mode == "spotify":
-            self._status.setText("Searching Spotify via spotDL (open.spotify.com)…")
-        else:
-            self._status.setText("Searching YouTube via yt-dlp…")
-        mode = self._mode
-        youtube_search_type = str(self._youtube_search_type.currentData() or "videos")
-
-        def worker():
-            try:
-                from casu.search import (SearchResult, search_youtube,
-                                         search_youtube_playlists)
-                if mode == "spotify":
-                    found = [SearchResult(title=r.title, url=r.url,
-                                          duration=r.duration,
-                                          uploader=r.artist or "Spotify",
-                                          source="spotify")
-                             for r in search_spotify(query, limit=12)]
-                else:
-                    found = (search_youtube_playlists(query, limit=25)
-                             if youtube_search_type == "playlists"
-                             else search_youtube(query, limit=25))
-            except Exception as exc:  # noqa: BLE001 - surface any engine failure
-                self._bridge.errorReady.emit(str(exc))
-            else:
-                self._bridge.resultReady.emit(found)
-        threading.Thread(target=worker, daemon=True).start()
-
-    def _present_results(self, found):
-        self._searching = False
-        self._results = list(found)
-        self._list.clear()
-        self._list.setIconSize(QSize(120, 68))
-        self._thumb_jobs = []
-        for row, item in enumerate(self._results):
-            duration = (f"{int(item.duration // 60)}:{int(item.duration % 60):02d}"
-                        if item.duration else "live")
-            tag = ("PLAYLIST" if item.source == "youtube_playlist" else
-                   ("YT" if item.source != "handoff" else "FIND"))
-            uploader = item.uploader or "unknown"
-            title = item.title
-            if len(title) > 70:
-                title = title[:67] + "…"
-            entry = QListWidgetItem(
-                f"  {title}\n  {tag} · {uploader}  ·  {duration}  ▶")
-            entry.setSizeHint(QSize(0, 76))
-            self._list.addItem(entry)
-            self._thumb_jobs.append((row, item))
-        if self._thumb_jobs:
-            self._load_thumbnails(list(self._thumb_jobs))
-        self._status.setText(f"{len(self._results)} results — double-click or press Enter to play")
-
-    def _load_thumbnails(self, jobs):
-        bridge = self._thumb_bridge
-
-        def worker():
-            import urllib.request
-            for row, item in jobs:
-                url = str(item.thumbnail or "")
-                if not url.startswith("http"):
-                    continue
-                try:
-                    request = urllib.request.Request(
-                        url, headers={"User-Agent": "MPCASU/1.0"})
-                    data = urllib.request.urlopen(
-                        request, timeout=10).read(1024 * 1024)
-                    image = QImage()
-                    if image.loadFromData(data):
-                        bridge.resultReady.emit(("thumb", row, image.copy()))
-                except (OSError, ValueError):
-                    continue
-        threading.Thread(target=worker, daemon=True).start()
-
-    def _apply_thumb(self, payload):
-        if not payload or payload[0] != "thumb":
-            return
-        _, row, image = payload
-        item = self._list.item(row)
-        if item is None:
-            return
-        pixmap = QPixmap.fromImage(image).scaled(
-            88, 50, Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation)
-        item.setIcon(QIcon(pixmap))
-
-    def _present_error(self, detail):
-        self._searching = False
-        self._status.setText(f"Search failed: {detail}")
-
-    def _play_row(self, row: int):
-        if 0 <= row < len(self._results):
-            item = self._results[row]
-            if item.source == "youtube_playlist":
-                self._expand_youtube_playlist(item.url, item.title)
-                return
-            if item.source == "handoff":
-                if not self._consent_given():
-                    self._status.setText("Accept the yt-dlp legal notice above to enable the YouTube handoff")
-                    return
-                self._status.setText(f"Handoff to YouTube provider: {item.title}")
-                self._run_search(item.title)
-                return
-            self.sourceActivated.emit(item)
-
-    def keyPressEvent(self, event):
-        if event.key() == Qt.Key_Return and self._list.hasFocus():
-            self._play_row(self._list.currentRow())
-            return
-        if event.key() == Qt.Key_Escape:
-            self.closeRequested.emit()
-            return
-        super().keyPressEvent(event)
-
-
 class MainWindow(QMainWindow):
     """MPCASU Qt main window — full media player."""
 
@@ -2761,6 +713,7 @@ class MainWindow(QMainWindow):
         self._dragging = False
         self._advancing = False
         self._end_handled = False
+        self._gapless_preloaded_for: str | None = None
         self._started_at = 0.0
         # Logical playback sequence over the queue: playlist groups stay in
         # the model (they are never dissolved); playback walks this flattened
@@ -3218,11 +1171,23 @@ class MainWindow(QMainWindow):
         info_btn.clicked.connect(self.show_media_info)
         secondary.addWidget(info_btn)
 
+        keys_btn = QPushButton("?")
+        keys_btn.setObjectName("IconButton")
+        keys_btn.setToolTip("Tastaturkürzel (v7.8)")
+        keys_btn.clicked.connect(self._show_shortcuts_dialog)
+        secondary.addWidget(keys_btn)
+
         rec_settings_btn = QPushButton("Rec-Settings")
         rec_settings_btn.setObjectName("IconButton")
         rec_settings_btn.setToolTip("Recording: Speicherort, Format, Splitting")
         rec_settings_btn.clicked.connect(self._show_record_settings_dialog)
         secondary.addWidget(rec_settings_btn)
+
+        eq_btn = QPushButton("EQ")
+        eq_btn.setObjectName("IconButton")
+        eq_btn.setToolTip("Equalizer: 10-Band + Preamp (v7.8)")
+        eq_btn.clicked.connect(self._show_equalizer_dialog)
+        secondary.addWidget(eq_btn)
 
         self._more_panel.hide()
         self._more_btn.toggled.connect(self._more_panel.setVisible)
@@ -4146,7 +2111,48 @@ class MainWindow(QMainWindow):
             if self.isFullScreen():
                 self.toggle_fullscreen()
                 return
+        # v7.8: player keyboard scheme (VLC/mpv-parity single keys). Only on
+        # the player page so text fields everywhere keep normal typing.
+        if self._center_stack.currentIndex() == 0 and not self._typing_in_field(event):
+            key = event.key()
+            if key == Qt.Key_Space:
+                self.toggle_playback()
+                return
+            if key in (Qt.Key_F,):
+                self.toggle_fullscreen()
+                return
+            if key == Qt.Key_M:
+                self.toggle_mute()
+                return
+            if key == Qt.Key_Right:
+                self.seek_by(10)
+                return
+            if key == Qt.Key_Left:
+                self.seek_by(-10)
+                return
+            if key == Qt.Key_Up:
+                self.seek_by(60)
+                return
+            if key == Qt.Key_Down:
+                self.seek_by(-60)
+                return
+            if key == Qt.Key_N:
+                self.play_next()
+                return
+            if key == Qt.Key_P:
+                self.play_previous()
+                return
         super().keyPressEvent(event)
+
+    def _typing_in_field(self, event) -> bool:
+        """True when the focus widget consumes text input (search fields …)."""
+        focus = self.focusWidget()
+        if focus is None:
+            return False
+        from PySide6.QtWidgets import QLineEdit, QTextEdit, QPlainTextEdit
+        if isinstance(focus, (QLineEdit, QTextEdit, QPlainTextEdit)):
+            return True
+        return False
 
     # --- Playlist management ---
 
@@ -4829,6 +2835,114 @@ class MainWindow(QMainWindow):
         self._record_format = updated.record_format
         self.toast("Recording settings gespeichert")
         self.status("Recording: Speicherort/Format/Splitting gespeichert")
+
+    def _show_equalizer_dialog(self):
+        """v7.8: 10-band equalizer dialog (preamp + per-band gains, ±20 dB)."""
+        from PySide6.QtWidgets import QSlider, QGroupBox
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Equalizer")
+        dialog.setMinimumWidth(640)
+        layout = QVBoxLayout(dialog)
+        layout.setSpacing(10)
+
+        bands = self.backend.equalizer_band_frequencies() if self.backend else ()
+        if not bands:
+            layout.addWidget(QLabel("Equalizer ist in diesem Backend nicht verfügbar."))
+            buttons = QDialogButtonBox(QDialogButtonBox.Close)
+            buttons.rejected.connect(dialog.reject)
+            layout.addWidget(buttons)
+            dialog.exec()
+            return
+
+        group = QGroupBox("Bänder (dB)")
+        group_layout = QHBoxLayout(group)
+        group_layout.setSpacing(6)
+        sliders = {}
+        for index, freq in enumerate(bands):
+            column = QVBoxLayout()
+            slider = QSlider(Qt.Vertical)
+            slider.setRange(-20, 20)
+            slider.setValue(0)
+            slider.setTickPosition(QSlider.TicksBelow)
+            slider.setTickInterval(5)
+            label = QLabel(self._eq_band_label(freq))
+            label.setAlignment(Qt.AlignHCenter)
+            value_label = QLabel("0")
+            value_label.setAlignment(Qt.AlignHCenter)
+            slider.valueChanged.connect(
+                lambda v, lbl=value_label: lbl.setText(str(v)))
+            column.addWidget(slider, 1)
+            column.addWidget(label)
+            column.addWidget(value_label)
+            group_layout.addLayout(column, 1)
+            sliders[index] = slider
+        layout.addWidget(group)
+
+        preamp_row = QHBoxLayout()
+        preamp_row.addWidget(QLabel("Preamp (dB)"))
+        preamp_slider = QSlider(Qt.Horizontal)
+        preamp_slider.setRange(-20, 20)
+        preamp_slider.setValue(0)
+        preamp_row.addWidget(preamp_slider, 1)
+        layout.addLayout(preamp_row)
+
+        reset_btn = QPushButton("Zurücksetzen")
+        reset_btn.clicked.connect(lambda: [s.setValue(0) for s in sliders.values()] or preamp_slider.setValue(0))
+        layout.addWidget(reset_btn)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+
+        if dialog.exec() != QDialog.Accepted:
+            return
+        gains = {index: float(slider.value()) for index, slider in sliders.items()
+                 if slider.value() != 0}
+        try:
+            self.backend.set_equalizer_bands(
+                gains or None,
+                preamp=float(preamp_slider.value()) if preamp_slider.value() != 0 else None)
+            self.toast("Equalizer gespeichert")
+        except Exception as exc:  # noqa: BLE001 - surface backend errors
+            self.status(f"Equalizer-Fehler: {exc}")
+
+    @staticmethod
+    def _eq_band_label(freq: float) -> str:
+        if freq >= 1000:
+            return f"{freq / 1000:g}k"
+        return f"{freq:g}"
+
+    def _show_shortcuts_dialog(self):
+        """v7.8: keyboard shortcut reference (mpv/VLC-parity single keys)."""
+        rows = [
+            ("Space", "Wiedergabe / Pause"),
+            ("F", "Vollbild an/aus"),
+            ("M", "Stumm an/aus"),
+            ("\u2190 / \u2192", "10 s zur\u00fcck / vor"),
+            ("\u2191 / \u2193", "60 s zur\u00fcck / vor"),
+            ("N / P", "N\u00e4chster / vorheriger Track"),
+            ("Esc", "Vollbild oder Unterseite verlassen"),
+            ("Ctrl+O", "Dateien \u00f6ffnen"),
+            ("Ctrl+L", "Bibliothek"),
+            ("Ctrl+I", "Medien-Info"),
+        ]
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Tastaturk\u00fcrzel")
+        layout = QVBoxLayout(dialog)
+        for key, action in rows:
+            row = QHBoxLayout()
+            key_label = QLabel(key)
+            key_label.setStyleSheet("font-weight: bold; min-width: 70px;")
+            row.addWidget(key_label)
+            row.addWidget(QLabel(action), 1)
+            layout.addLayout(row)
+        buttons = QDialogButtonBox(QDialogButtonBox.Close)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+        dialog.exec()
+
+
 
     def _recording_source(self) -> str:
         if getattr(self, "_network_source", None):
@@ -6577,6 +4691,35 @@ class MainWindow(QMainWindow):
                     and not self._paused):
                 self._handle_ended()
 
+    def _gapless_preload_next(self):
+        """v7.8 gapless: ask the backend to pre-resolve the next queue entry.
+
+        Guarded by a field so the resolve happens at most once per track (the
+        poll runs several times per second near the end)."""
+        if getattr(self, "_gapless_preloaded_for", None) == str(self.current):
+            return
+        seq = self._ensure_play_seq()
+        if not seq:
+            return
+        current_text = str(self.current) if self.current else None
+        index = seq.index(current_text) if current_text in seq else -1
+        if index < 0:
+            return
+        next_index = index + 1
+        if next_index >= len(seq):
+            if self._repeat_mode == "all":
+                next_index = 0
+            else:
+                return
+        candidate = seq[next_index]
+        preload = getattr(self.backend, "preload", None)
+        if preload is not None and callable(preload):
+            try:
+                if preload(candidate):
+                    self._gapless_preloaded_for = str(self.current)
+            except Exception:  # noqa: BLE001 - preload is best effort
+                pass
+
     def _handle_ended(self):
         """Advance/loop after a track ends (guarded against double fire)."""
         if self._advancing or self._end_handled or not self.backend:
@@ -6585,6 +4728,7 @@ class MainWindow(QMainWindow):
             return  # the A–B loop owns the end
         self._end_handled = True
         self._advancing = True
+        self._gapless_preloaded_for = None
         try:
             self.play_next(automatic=True)
         finally:
@@ -6593,6 +4737,13 @@ class MainWindow(QMainWindow):
     def _update_time_labels(self, pos: float):
         self._time_current.setText(format_duration(pos))
         self._visualizer.set_position(pos)
+        # v7.8 gapless: pre-resolve the next track near the end of the current
+        # one so the switch at ENDED only rebinds an already-parsed media.
+        if (self.backend is not None and self.duration > 0
+                and not self._advancing):
+            remaining = self.duration - pos
+            if remaining < 15.0 or pos >= self.duration * 0.85:
+                self._gapless_preload_next()
         if self._ab_a is not None and self._ab_b is not None and self.backend is not None:
             if pos >= self._ab_b - 0.05:
                 try:

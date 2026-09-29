@@ -173,6 +173,9 @@ class LibVLCBackend:
         if not self.instance:
             raise BackendError("libVLC could not be initialized")
         self.media = None; self.player = None; self.path: Path | None = None
+        # v7.8 gapless: pre-resolved next media object (parse-free, cheap)
+        self._preloaded_media = None
+        self._preloaded_source: str | None = None
         self._native_temp: Path | None = None
         self._state = PlaybackState.EMPTY
         # Asynchronous libVLC teardown state. libvlc_media_player_stop can
@@ -263,6 +266,14 @@ class LibVLCBackend:
             ("libvlc_audio_equalizer_release", None, [ctypes.c_void_p]),
             ("libvlc_media_player_set_equalizer", ctypes.c_int,
              [ctypes.c_void_p, ctypes.c_void_p]),
+            # v7.8: per-band equalizer control (10-band classic EQ)
+            ("libvlc_audio_equalizer_new", ctypes.c_void_p, []),
+            ("libvlc_audio_equalizer_set_amp_at_index", ctypes.c_int,
+             [ctypes.c_void_p, ctypes.c_float, ctypes.c_uint]),
+            ("libvlc_audio_equalizer_get_amp_at_index", ctypes.c_float,
+             [ctypes.c_void_p, ctypes.c_uint]),
+            ("libvlc_audio_equalizer_get_band_frequency", ctypes.c_float,
+             [ctypes.c_uint]),
         ))
         self._audio_delay_api = self._optional_install(
             "libvlc_audio_set_delay", ctypes.c_int,
@@ -404,12 +415,22 @@ class LibVLCBackend:
         self._state = PlaybackState.LOADING
         value = str(source)
         parsed = urlparse(value)
-        if self._is_location(value):
-            self._install("libvlc_media_new_location", ctypes.c_void_p, [ctypes.c_void_p, ctypes.c_char_p])
-            self.media = self.libvlc_media_new_location(self.instance, value.encode("utf-8"))
+        # v7.8 gapless: reuse the pre-resolved media object when the UI
+        # preloaded this exact source (saves URL resolve + metadata parse
+        # right at the track switch — the audible-gap producer).
+        if (self._preloaded_media is not None
+                and self._preloaded_source == value):
+            self.media = self._preloaded_media
+            self._preloaded_media = None
+            self._preloaded_source = None
         else:
-            local = self.path or Path(parsed.path)
-            self.media = self.libvlc_media_new_path(self.instance, os_path(local))
+            self._release_preload()
+            if self._is_location(value):
+                self._install("libvlc_media_new_location", ctypes.c_void_p, [ctypes.c_void_p, ctypes.c_char_p])
+                self.media = self.libvlc_media_new_location(self.instance, value.encode("utf-8"))
+            else:
+                local = self.path or Path(parsed.path)
+                self.media = self.libvlc_media_new_path(self.instance, os_path(local))
         if not self.media:
             self._state = PlaybackState.ERROR
             self._last_error_detail = (
@@ -439,6 +460,49 @@ class LibVLCBackend:
             self.libvlc_media_player_set_nsobject(self.player, ctypes.c_void_p(self.widget.winfo_id()))
         self._attach_events()
         self._state = PlaybackState.READY
+
+    # ------------------------------------------------------------- v7.8 gapless
+    def _release_preload(self) -> None:
+        """Release a retained media object (either consumed or stale)."""
+        if self._preloaded_media is not None:
+            try:
+                self.libvlc_media_release(self._preloaded_media)
+            except Exception:  # noqa: BLE001 - best effort release
+                pass
+        self._preloaded_media = None
+        self._preloaded_source = None
+
+    def preload(self, source: str | Path) -> bool:
+        """Pre-resolve the next track's media object (v7.8 gapless).
+
+        Cheap: only URL/metadata resolution happens now — decoder resources
+        stay free until open_source() consumes the object at the switch.
+        Returns True when the source was retained.
+        """
+        value = str(source)
+        if not self.supports(source):
+            return False
+        self._release_preload()
+        try:
+            if self._is_location(value):
+                self._install("libvlc_media_new_location", ctypes.c_void_p,
+                              [ctypes.c_void_p, ctypes.c_char_p])
+                media = self.libvlc_media_new_location(self.instance, value.encode("utf-8"))
+            else:
+                local = Path(source)
+                media = self.libvlc_media_new_path(self.instance, os_path(local))
+            if not media:
+                return False
+            if self._subtitle_option_api:
+                for option in self.SAFE_MEDIA_OPTIONS:
+                    self.libvlc_media_add_option(media, option.encode("utf-8"))
+            self._preloaded_media = media
+            self._preloaded_source = value
+            return True
+        except Exception:  # noqa: BLE001 - preload is best effort
+            self._preloaded_media = None
+            self._preloaded_source = None
+            return False
 
     def add_external_subtitle(self, subtitle: Path) -> None:
         """Reopen the current source with a real libVLC subtitle option."""
@@ -797,6 +861,48 @@ class LibVLCBackend:
             self.libvlc_audio_equalizer_release(equalizer)
         return names[value]
 
+    def equalizer_band_frequencies(self) -> tuple[float, ...]:
+        """Centre frequencies (Hz) of the equalizer bands (v7.8)."""
+        if not self._equalizer_api:
+            return ()
+        values = []
+        for index in range(10):
+            value = self.libvlc_audio_equalizer_get_band_frequency(index)
+            if value > 0:
+                values.append(round(value, 2))
+        return tuple(values)
+
+    def set_equalizer_bands(self, gains: dict[int, float] | None = None,
+                            preamp: float | None = None) -> None:
+        """Set per-band gains (dB, -20..+20) on a fresh equalizer (v7.8).
+
+        *gains* maps band index → gain; omitted bands stay at 0 dB. Pass
+        ``None`` to disable the equalizer entirely.
+        """
+        if not self._equalizer_api or not self.player:
+            raise BackendError("audio equalizer is unavailable")
+        if gains is None:
+            if self.libvlc_media_player_set_equalizer(self.player, None) != 0:
+                raise BackendError("libVLC could not disable the equalizer")
+            return
+        equalizer = self.libvlc_audio_equalizer_new()
+        if not equalizer:
+            raise BackendError("libVLC could not create a new equalizer")
+        try:
+            if preamp is not None:
+                self.libvlc_audio_equalizer_set_amp_at_index(
+                    equalizer, max(-20.0, min(20.0, float(preamp))), 0)
+            for index, gain in gains.items():
+                position = int(index)
+                if position < 0 or position > 9:
+                    raise BackendError("equalizer band index is out of range")
+                self.libvlc_audio_equalizer_set_amp_at_index(
+                    equalizer, max(-20.0, min(20.0, float(gain))), position)
+            if self.libvlc_media_player_set_equalizer(self.player, equalizer) != 0:
+                raise BackendError("libVLC rejected the equalizer bands")
+        finally:
+            self.libvlc_audio_equalizer_release(equalizer)
+
     def set_audio_delay(self, milliseconds: float) -> float:
         value = max(-5000.0, min(5000.0, float(milliseconds)))
         if not self._audio_delay_api or not self.player:
@@ -977,6 +1083,8 @@ class LibVLCBackend:
         # exists to prevent: close_media runs on every source switch.
         player, self.player = self.player, None
         media, self.media = self.media, None
+        # v7.8: a stale preload no longer matches anything after a close.
+        self._release_preload()
         self._user_stop_monotonic = None
         if player is not None:
             def retire(p=player, m=media):
