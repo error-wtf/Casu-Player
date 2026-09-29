@@ -5,6 +5,16 @@ ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 STAGE="$(mktemp -d)"
 trap 'rm -rf "$STAGE"' EXIT
 
+# Single source of truth for the product version is the visible string in
+# main_window.py (_CASU_APP_VERSION = "MPCASU 7.8.0"). Never hardcode a
+# version here again — the release gate greps for exactly this equality.
+VERSION="$(sed -nE 's/^_CASU_APP_VERSION = "MPCASU ([0-9.]+)".*/\1/p' \
+  "$ROOT/src/desktop/mpcasu_qt/main_window.py" | head -n1)"
+if [ -z "$VERSION" ]; then
+  echo "build-player-deb.sh: cannot derive version from main_window.py" >&2
+  exit 1
+fi
+
 mkdir -p "$STAGE/DEBIAN" "$STAGE/usr/bin" "$STAGE/usr/share/mpcasu-player" \
   "$STAGE/usr/share/applications" "$STAGE/usr/share/icons/hicolor/256x256/apps"
 
@@ -16,14 +26,16 @@ cp "$ROOT/src/windows/assets/mpcasu_player_icon.png" "$STAGE/usr/share/icons/hic
 install -m 0755 "$ROOT/packaging/linux/mpcasu-player" "$STAGE/usr/bin/mpcasu-player"
 install -m 0644 "$ROOT/packaging/linux/mpcasu-player.desktop" "$STAGE/usr/share/applications/mpcasu-player.desktop"
 
-cat > "$STAGE/DEBIAN/control" <<'EOF'
+cat > "$STAGE/DEBIAN/control" <<EOF
 Package: mpcasu-player
-Version: 7.0.0
+Version: $VERSION
 Section: video
 Priority: optional
 Architecture: all
 Maintainer: Lino Casu <error-wtf@users.noreply.github.com>
 Depends: python3 (>= 3.10), python3-numpy, python3-pyside6.qtcore, python3-pyside6.qtgui, python3-pyside6.qtwidgets, python3-pyside6.qtnetwork, python3-pyside6.qtwebenginewidgets, python3-pyside6.qtdbus, libvlc5, vlc-plugin-base, vlc-plugin-video-output, libpulse0, libass9, ffmpeg, yt-dlp
+Conflicts: mpcasu
+Replaces: mpcasu
 Description: MPCASU Player for established and read-only experimental media
  Cross-platform Qt media player without CASU creation, conversion or CLI tools.
 EOF
@@ -36,4 +48,6 @@ POSTINST
 chmod 0755 "$STAGE/DEBIAN/postinst"
 mkdir -p "$ROOT/dist"
 find "$STAGE" -exec touch -h -d '@0' {} +
-dpkg-deb --build --root-owner-group "$STAGE" "$ROOT/dist/mpcasu-player_7.0.0_all.deb" >/dev/null
+dpkg-deb --build --root-owner-group "$STAGE" "$ROOT/dist/mpcasu-player_${VERSION}_all.deb" >/dev/null
+sha256sum "$ROOT/dist/mpcasu-player_${VERSION}_all.deb" | sed "s#  .*/#  #" > "$ROOT/dist/SHA256SUMS"
+echo "Built mpcasu-player $VERSION in $ROOT/dist"
