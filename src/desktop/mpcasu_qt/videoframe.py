@@ -61,6 +61,10 @@ class VideoSurface(QWidget):
         self._video_active = False
         self._cover: QPixmap | None = None
         self._native_frame: QPixmap | None = None
+        # v7.8 anti-flicker: cache the scaled frame; expensive smooth scaling
+        # ran on EVERY paintEvent (CPU-bound, fill+draw not atomic -> flicker).
+        self._scaled_cache: QPixmap | None = None
+        self._scaled_cache_key: tuple | None = None
         self._native_subtitle: str | None = None
         self._placeholder = "MPCASU"
         self.handle = NativeHandleAdapter(self)
@@ -97,7 +101,11 @@ class VideoSurface(QWidget):
     # Native CASU presentation (Qt-rendered frames, no libVLC involved)
     # ------------------------------------------------------------------
     def set_native_frame(self, pixmap: QPixmap | None) -> None:
+        if pixmap is self._native_frame:
+            return  # identical frame -> no repaint
         self._native_frame = pixmap
+        self._scaled_cache = None
+        self._scaled_cache_key = None
         self.update()
 
     def set_native_subtitle(self, text: str | None) -> None:
@@ -111,12 +119,23 @@ class VideoSurface(QWidget):
         if self._native_frame is not None and not self._native_frame.isNull():
             painter = QPainter(self)
             try:
-                painter.fillRect(self.rect(), QColor("#000000"))
-                scaled = self._native_frame.scaled(
-                    self.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation
-                )
+                size = (self.width(), self.height())
+                cache_key = (self._native_frame.cacheKey(), size)
+                if self._scaled_cache is None or self._scaled_cache_key != cache_key:
+                    self._scaled_cache = self._native_frame.scaled(
+                        self.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                    self._scaled_cache_key = cache_key
+                scaled = self._scaled_cache
                 x = (self.width() - scaled.width()) // 2
                 y = (self.height() - scaled.height()) // 2
+                # v7.8 anti-flicker: paint ONLY the letterbox bars, never a
+                # full-widget black fill under the frame (caused flashing).
+                if y > 0:
+                    painter.fillRect(0, 0, self.width(), y, QColor("#000000"))
+                    painter.fillRect(0, self.height() - y, self.width(), y, QColor("#000000"))
+                if x > 0:
+                    painter.fillRect(0, 0, x, self.height(), QColor("#000000"))
+                    painter.fillRect(self.width() - x, 0, x, self.height(), QColor("#000000"))
                 painter.drawPixmap(x, y, scaled)
                 if self._native_subtitle:
                     painter.setPen(QPen(QColor("#000000"), 4))

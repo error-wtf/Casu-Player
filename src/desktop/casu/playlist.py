@@ -18,9 +18,9 @@ from .core import CasuError
 from .fileio import atomic_write_json, read_bounded_json
 
 
-MAX_PLAYLIST_ITEMS = 10_000
+MAX_PLAYLIST_ITEMS = 50_000  # v7.8: world-scale IPTV/playlists
 MAX_PLAYLIST_PATH_BYTES = 4096
-MAX_PLAYLIST_FILE_BYTES = 8 * 1024 * 1024
+MAX_PLAYLIST_FILE_BYTES = 64 * 1024 * 1024
 MAX_LINE_BYTES = 4096
 
 #: Native playlist file extensions understood by the loaders (for file dialogs).

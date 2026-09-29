@@ -942,7 +942,8 @@ class EpgPage(QFrame):
             meta.setWordWrap(True)
             cl.addWidget(meta)
             card.mousePressEvent = lambda event, ch=channel: self.channelActivated.emit(ch)
-            self._grid.addWidget(card, index, 0)
+            # v7.8: two-column card grid (was: all 100 cards stacked in column 0)
+            self._grid.addWidget(card, index // 2, index % 2)
 
 
 class AboutPage(QFrame):
