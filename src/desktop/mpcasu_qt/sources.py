@@ -15,11 +15,12 @@ from __future__ import annotations
 
 import threading
 import urllib.parse
+from dataclasses import replace
 
 from mpcasu_qt.theme import PALETTE
 from mpcasu_qt.threads import _ThreadBridge
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QSize, Qt, Signal
 from PySide6.QtGui import QIcon, QImage, QPixmap
 from PySide6.QtWidgets import (
     QComboBox,
@@ -35,6 +36,7 @@ from PySide6.QtWidgets import (
 
 from casu.locations import is_youtube_url
 from casu.spotify import SpotifyError, expand_spotify, search_spotify
+
 
 class SourcesView(QFrame):
     """In-window view for YouTube/Spotify search and network stream URLs.
@@ -391,5 +393,4 @@ class SourcesView(QFrame):
             self.closeRequested.emit()
             return
         super().keyPressEvent(event)
-
 

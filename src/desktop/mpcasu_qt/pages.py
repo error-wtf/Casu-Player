@@ -18,6 +18,9 @@ import re
 import shutil
 from pathlib import Path
 
+from dataclasses import replace
+
+from casu import __version__
 from casu.playlist import PlaylistError, load_playlist_file, playlist_names
 
 from PySide6.QtCore import Qt, Signal
@@ -50,10 +53,6 @@ class LibraryPage(QFrame):
     addRequested = Signal(list)
     refreshRequested = Signal()
     backRequested = Signal()
-    playlistNewRequested = Signal()
-    playlistAddCurrentRequested = Signal(object)
-    playlistRemoveRequested = Signal(object, list)
-    playlistPlayRequested = Signal(object)
 
     MODES = {"all": "All Tracks", "artists": "Artists", "albums": "Albums",
              "genres": "Genres", "favorites": "Favorites", "playlists": "Playlists"}
@@ -110,7 +109,7 @@ class LibraryPage(QFrame):
         self._tracks_list = QListWidget()
         self._tracks_list.setObjectName("QueueTree")
         self._tracks_list.setSelectionMode(QAbstractItemView.ExtendedSelection)
-        self._tracks_list.itemDoubleClicked.connect(lambda _item: self._activate_selected())
+        self._tracks_list.itemDoubleClicked.connect(lambda _item: self._add_selected())
         self._tracks_list.setContextMenuPolicy(Qt.CustomContextMenu)
         self._tracks_list.customContextMenuRequested.connect(
             self._library_track_context_menu)
@@ -133,26 +132,6 @@ class LibraryPage(QFrame):
         self._add_playlist_btn.setObjectName("PrimaryButton")
         self._add_playlist_btn.clicked.connect(self._add_playlist_groups)
         bottom.addWidget(self._add_playlist_btn)
-        self._add_btn = add_btn
-        self._new_playlist_btn = QPushButton("New playlist")
-        self._new_playlist_btn.setObjectName("PrimaryButton")
-        self._new_playlist_btn.clicked.connect(
-            lambda: self.playlistNewRequested.emit())
-        bottom.addWidget(self._new_playlist_btn)
-        self._playlist_add_current_btn = QPushButton("Add current media")
-        self._playlist_add_current_btn.setObjectName("IconButton")
-        self._playlist_add_current_btn.clicked.connect(
-            lambda: self.playlistAddCurrentRequested.emit(
-                self._selected_playlist_path()))
-        bottom.addWidget(self._playlist_add_current_btn)
-        self._playlist_remove_btn = QPushButton("Remove selected item")
-        self._playlist_remove_btn.setObjectName("IconButton")
-        self._playlist_remove_btn.clicked.connect(self._remove_playlist_selection)
-        bottom.addWidget(self._playlist_remove_btn)
-        self._playlist_play_btn = QPushButton("Play selected")
-        self._playlist_play_btn.setObjectName("PrimaryButton")
-        self._playlist_play_btn.clicked.connect(self._play_playlist_selection)
-        bottom.addWidget(self._playlist_play_btn)
         layout.addLayout(bottom)
 
         if self._settings_store is not None:
@@ -244,12 +223,6 @@ class LibraryPage(QFrame):
         query = self._query()
         mode = self._mode()
         self._add_playlist_btn.setVisible(mode == "playlists")
-        playlist_mode = mode == "playlists"
-        self._add_btn.setVisible(True)
-        self._new_playlist_btn.setVisible(playlist_mode)
-        self._playlist_add_current_btn.setVisible(playlist_mode)
-        self._playlist_remove_btn.setVisible(playlist_mode)
-        self._playlist_play_btn.setVisible(playlist_mode)
         self._tracks.clear()
         self._tracks_list.clear()
         use_groups = mode in ("artists", "albums", "genres", "playlists")
@@ -440,43 +413,6 @@ class LibraryPage(QFrame):
             self.addRequested.emit(paths)
         elif self._mode() == "playlists":
             self._add_playlist_groups()
-
-    def show_playlists(self):
-        for index in range(self._mode_combo.count()):
-            if self._mode_combo.tabData(index) == "playlists":
-                self._mode_combo.setCurrentIndex(index)
-                break
-        self._refresh()
-
-    def _selected_playlist_path(self):
-        item = self._groups_list.currentItem()
-        return self._playlist_files.get(item.text()) if item is not None else None
-
-    def _selected_playlist_entries(self) -> list:
-        entries = []
-        for item in self._tracks_list.selectedItems():
-            row = self._tracks_list.row(item)
-            if 0 <= row < len(self._tracks):
-                entries.append(self._tracks[row])
-        return entries
-
-    def _activate_selected(self):
-        if self._mode() == "playlists":
-            self._play_playlist_selection()
-        else:
-            self._add_selected()
-
-    def _play_playlist_selection(self):
-        entries = self._selected_playlist_entries()
-        if entries:
-            self.addRequested.emit(entries)
-            self.playlistPlayRequested.emit(entries[0])
-
-    def _remove_playlist_selection(self):
-        playlist = self._selected_playlist_path()
-        entries = self._selected_playlist_entries()
-        if playlist is not None and entries:
-            self.playlistRemoveRequested.emit(playlist, entries)
 
     def _library_track_context_menu(self, position):
         item = self._tracks_list.itemAt(position)
@@ -868,7 +804,7 @@ class EpgPage(QFrame):
         source_row.addWidget(load_file_btn)
         load_url_btn = QPushButton("Load URL")
         load_url_btn.setObjectName("IconButton")
-        load_url_btn.clicked.connect(self._load_url)
+        load_url_btn.clicked.connect(lambda: self._load_source(self._source_entry.text().strip()))
         source_row.addWidget(load_url_btn)
         outer.addLayout(source_row)
 
@@ -914,17 +850,8 @@ class EpgPage(QFrame):
         if path:
             self._load_source(path)
 
-    def _load_url(self):
-        source = self._source_entry.text().strip()
-        if not source:
-            self._status.setText("Please enter an IPTV playlist URL.")
-            return
-        self._load_source(source)
-
     def _load_source(self, source: str):
-        source = str(source or "").strip()
         if not source:
-            self._status.setText("Please enter an IPTV playlist URL.")
             return
         try:
             if source.endswith((".xml", ".xmltv")):
@@ -1035,7 +962,7 @@ class AboutPage(QFrame):
         sub.setAlignment(Qt.AlignCenter)
         layout.addWidget(sub)
         layout.addSpacing(12)
-        info = QLabel("Version 7.0.0\nMedia Player for CASU & Legacy Media\nIn-process playback · No external player")
+        info = QLabel(f"Version {__version__}\nMedia Player for CASU & Legacy Media\nIn-process playback · No external player")
         info.setObjectName("NowPlayingMeta")
         info.setAlignment(Qt.AlignCenter)
         layout.addWidget(info)

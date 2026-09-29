@@ -3,6 +3,8 @@
 """MPCASU Qt main window — full-featured media player UI."""
 from __future__ import annotations
 
+_CASU_APP_VERSION = "MPCASU 7.8.0"  # visible product string (single source, see release gate)
+
 import hashlib
 import json
 import math
@@ -25,6 +27,11 @@ from PySide6.QtGui import (
     QTextDocument, QImage, QLinearGradient, QRadialGradient, QBrush, QGuiApplication,
     QPainterPath, QPolygonF,
 )
+from .mpris import _register_mpris
+from .pages import AboutPage, EpgPage, LibraryPage, OptionsPage
+from .playlist_widget import PlaylistPane, QueueTree
+from .sources import SourcesView
+from .threads import _ThreadBridge  # v7.8: MPRIS module split
 
 from PySide6.QtWidgets import (
     QApplication, QAbstractItemView, QButtonGroup, QCheckBox, QComboBox, QDialog,
@@ -57,10 +64,6 @@ from casu.recording import MediaRecorder, RecordingError
 
 from casu.native import NativeCasuError, read_native
 from casu.native_v2 import ChunkType, NativeV2Error, read_native_v2
-from .pages import AboutPage, EpgPage, LibraryPage, OptionsPage
-from .playlist_widget import PlaylistPane, QueueTree
-from .sources import SourcesView
-from .threads import _ThreadBridge
 
 from mpcasu_backend import (
     BackendError, CasuBackend, LibVLCBackend, PlaybackState,
@@ -357,7 +360,7 @@ class Sidebar(QFrame):
 
         layout.addStretch()
 
-        version = QLabel("MPCASU 7.0.0")
+        version = QLabel(f"MPCASU {_CASU_APP_VERSION}")
         version.setObjectName("NowPlayingMeta")
         version.setContentsMargins(16, 8, 16, 8)
         version.setAlignment(Qt.AlignLeft | Qt.AlignBottom)
@@ -696,7 +699,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("MPCASU Media Player")
         avail = QGuiApplication.primaryScreen().availableGeometry()
-        self.setMinimumSize(min(980, avail.width()), min(620, avail.height()))
+        self.setMinimumSize(min(700, avail.width()), min(400, avail.height()))
         self.resize(min(1360, avail.width() - 24), min(820, avail.height() - 24))
         self.move(avail.x() + max(0, (avail.width() - self.width()) // 2),
                   avail.y() + max(0, (avail.height() - self.height()) // 2))
@@ -1218,12 +1221,6 @@ class MainWindow(QMainWindow):
         self._library_page.addRequested.connect(lambda paths: self.add_files(paths))
         self._library_page.refreshRequested.connect(self.refresh_watched_folders)
         self._library_page.backRequested.connect(self._show_player_page)
-        self._library_page.playlistNewRequested.connect(self._new_playlist)
-        self._library_page.playlistAddCurrentRequested.connect(
-            self._add_current_to_library_playlist)
-        self._library_page.playlistRemoveRequested.connect(
-            self._remove_library_playlist_items)
-        self._library_page.playlistPlayRequested.connect(self.play_selected)
         self._options_page = OptionsPage(self.settings_store, self)
         self._options_page.applied.connect(self._apply_settings)
         self._options_page.actionRequested.connect(self._options_action)
@@ -1247,9 +1244,6 @@ class MainWindow(QMainWindow):
         self._playlist_pane.childPlayRequested.connect(self._on_queue_child_play)
         self._playlist_pane.childRemoveRequested.connect(self._on_child_remove_from_playlist)
         self._playlist_pane.childMoveRequested.connect(self._on_child_move_to_playlist)
-        self._playlist_pane.newPlaylistRequested.connect(self._new_playlist)
-        self._playlist_pane.addCurrentToPlaylistRequested.connect(
-            self._add_current_to_selected_playlist)
         self._playlist_pane.saveRequested.connect(self.save_playlist)
         self._playlist_pane.loadRequested.connect(self.load_playlist)
         self._random = random.SystemRandom()
@@ -1270,7 +1264,7 @@ class MainWindow(QMainWindow):
 
         status_bar = QStatusBar()
         status_bar.setObjectName("StatusBar")
-        self._status_left = QLabel("MPCASU 7.0.0")
+        self._status_left = QLabel(f"MPCASU {_CASU_APP_VERSION}")
         self._status_left.setObjectName("StatusText")
         self._status_left.setStyleSheet(f"color: {PALETTE.text_muted};")
         status_bar.addWidget(self._status_left)
@@ -1359,8 +1353,9 @@ class MainWindow(QMainWindow):
             self.show_sources("url")
             return
         if name == "PLAYLISTS":
-            self._library_page.show_playlists()
-            self._show_page(self._library_page, "PLAYLISTS")
+            self._show_player_page()
+            self._playlist_pane.setVisible(True)
+            self._playlist_pane.set_view("playlists")
             self._sidebar.set_active("PLAYLISTS")
             return
         if name == "IPTV / EPG":
@@ -2337,17 +2332,31 @@ class MainWindow(QMainWindow):
         self._toast_timer.start(2600)
 
     def _display_title(self, path) -> str:
-        """Tag info (title — artist) if available, otherwise the file name."""
+        """Tag info (title — artist) if available, otherwise the file name.
+
+        v7.8: results are memoized per path. MPRIS polls metadata several
+        times per second; without the cache every poll spawned an ffprobe
+        subprocess during playback.
+        """
+        key = str(path)
+        titles = getattr(self, "_display_titles", None)
+        if titles is None:
+            titles = self._display_titles = {}
+        cached = titles.get(key)
+        if cached is not None:
+            return cached
+        display = Path(key).name
         try:
             probe = ffprobe(Path(path))
             tags = (probe.get("format", {}) or {}).get("tags") or {}
             title = str(tags.get("title") or "").strip()
             artist = str(tags.get("artist") or "").strip()
             if title:
-                return f"{title} — {artist}" if artist else title
+                display = f"{title} — {artist}" if artist else title
         except Exception:  # noqa: BLE001 - tag lookup is best effort
             pass
-        return Path(path).name
+        titles[key] = display
+        return display
 
     def _set_caption(self, text: str, path=None):
         if not text:
@@ -2836,6 +2845,7 @@ class MainWindow(QMainWindow):
         self.toast("Recording settings gespeichert")
         self.status("Recording: Speicherort/Format/Splitting gespeichert")
 
+
     def _show_equalizer_dialog(self):
         """v7.8: 10-band equalizer dialog (preamp + per-band gains, ±20 dB)."""
         from PySide6.QtWidgets import QSlider, QGroupBox
@@ -2857,7 +2867,7 @@ class MainWindow(QMainWindow):
         group = QGroupBox("Bänder (dB)")
         group_layout = QHBoxLayout(group)
         group_layout.setSpacing(6)
-        sliders = {}
+        sliders: dict[int, QSlider] = {}
         for index, freq in enumerate(bands):
             column = QVBoxLayout()
             slider = QSlider(Qt.Vertical)
@@ -2941,7 +2951,6 @@ class MainWindow(QMainWindow):
         buttons.rejected.connect(dialog.reject)
         layout.addWidget(buttons)
         dialog.exec()
-
 
 
     def _recording_source(self) -> str:
@@ -3883,125 +3892,6 @@ class MainWindow(QMainWindow):
                 playlists.append(item)
         return playlists
 
-    def _playlist_search_folders(self) -> list[Path]:
-        try:
-            folders = [Path(p).expanduser() for p in
-                       self.settings_store.load().watched_folders]
-        except Exception:
-            folders = []
-        return folders or [Path.home()]
-
-    def _load_playlist_overview(self):
-        existing = {str(path) for path in self._queue_playlists()}
-        found = []
-        for folder in self._playlist_search_folders():
-            if not folder.is_dir():
-                continue
-            try:
-                for path in folder.rglob("*"):
-                    try:
-                        if (path.is_file() and
-                                path.suffix.lower() in PlaylistPane.PLAYLIST_SUFFIXES):
-                            resolved = path.resolve()
-                            if str(resolved) not in existing:
-                                found.append(resolved)
-                                existing.add(str(resolved))
-                    except (OSError, PermissionError):
-                        continue
-            except (OSError, PermissionError):
-                continue
-        if found:
-            self.playlist_model.add(found)
-            self._render_playlist()
-
-    def _new_playlist(self):
-        from PySide6.QtWidgets import QInputDialog
-        name, ok = QInputDialog.getText(
-            self, "New playlist", "Playlist name (e.g. mylist.m3u):")
-        if not ok or not name.strip():
-            self.status("Playlist name is required")
-            return
-        try:
-            target = self._resolve_playlist_target(name)
-            if not target.exists():
-                save_playlist_file(target, PlaylistModel())
-            self.playlist_model.add((target,))
-        except (PlaylistError, OSError, ValueError) as exc:
-            self.status(f"Could not create playlist: {exc}")
-            return
-        self._render_playlist(self.playlist_model.index_of(target))
-        self._library_page.show_playlists()
-        self.status(f"Playlist created · {target.name}")
-
-    def _add_current_to_library_playlist(self, target):
-        if target is None:
-            self.status("Please select a playlist")
-            return
-        source = self.current or self.selected_path()
-        if source is None or self._playlist_pane._is_playlist(source):
-            self.status("No media item available")
-            return
-        try:
-            model = load_playlist_file(target)
-            before = len(model.items)
-            model.add((source,))
-            if len(model.items) == before:
-                self.status("Media is already in the playlist")
-                return
-            save_playlist_file(target, model)
-        except (PlaylistError, OSError, ValueError) as exc:
-            self.status(f"Could not update playlist: {exc}")
-            return
-        self._library_page.show_playlists()
-        self._invalidate_play_seq()
-        self.status(f"Added media to {Path(target).name}")
-
-    def _remove_library_playlist_items(self, target, entries):
-        if target is None or not entries:
-            self.status("Please select a playlist item")
-            return
-        try:
-            model = load_playlist_file(target)
-            wanted = {str(entry) for entry in entries}
-            indices = [index for index, entry in enumerate(model.items)
-                       if str(entry) in wanted]
-            if not indices:
-                self.status("Playlist item is no longer available")
-                return
-            model.remove(indices)
-            save_playlist_file(target, model)
-        except (PlaylistError, OSError, ValueError) as exc:
-            self.status(f"Could not update playlist: {exc}")
-            return
-        self._library_page.show_playlists()
-        self._playlist_pane.refresh_group(target)
-        self._invalidate_play_seq()
-        self.status(f"Removed {len(indices)} item(s) from {Path(target).name}")
-
-    def _add_current_to_selected_playlist(self):
-        target = self._playlist_pane.selected_playlist_path()
-        if target is None:
-            self.status("Please select a playlist")
-            return
-        source = self.current or self.selected_path()
-        if source is None or self._playlist_pane._is_playlist(source):
-            self.status("No media item available")
-            return
-        try:
-            model = load_playlist_file(target)
-            before = len(model.items)
-            model.add((source,))
-            if len(model.items) == before:
-                self.status("Media is already in the playlist")
-                return
-            save_playlist_file(target, model)
-        except (PlaylistError, OSError, ValueError) as exc:
-            self.status(f"Could not update playlist: {exc}")
-            return
-        self._playlist_pane.refresh_group(target)
-        self._invalidate_play_seq()
-        self.status(f"Added media to {target.name}")
-
     def _choose_playlist_target(self, playlists: list, *, title: str,
                                 label: str) -> Path | None:
         """Dialog to pick an existing queue playlist or create a new one."""
@@ -4630,8 +4520,6 @@ class MainWindow(QMainWindow):
 
     # --- Backend events ---
 
-    def _backend_event(self, state: PlaybackState):
-        QTimer.singleShot(0, lambda s=state: self._apply_backend_event(s))
     def _apply_backend_event(self, state: PlaybackState):
         if state == PlaybackState.PLAYING:
             self._paused = False
@@ -4774,364 +4662,3 @@ class MainWindow(QMainWindow):
 
     def _backend_event(self, state: PlaybackState):
         QTimer.singleShot(0, lambda s=state: self._apply_backend_event(s))
-# --- MPRIS D-Bus (org.mpris.MediaPlayer2.*) — desktop remote control -------
-#
-# Exposes the player on the session bus so GNOME Shell (top-right media
-# menu), playerctl and every other MPRIS client can Play/Pause/Next/Previous,
-# read status/metadata and control volume/loop/shuffle. Registration is best
-# effort: without a session bus (or QtDBus) the player simply runs without it.
-
-_MPRIS_SERVICE = "org.mpris.MediaPlayer2.casu"
-_MPRIS_PATH = "/org/mpris/MediaPlayer2"
-_MPRIS_PLAYER_INTERFACE = "org.mpris.MediaPlayer2.Player"
-
-try:
-    from PySide6.QtDBus import (
-        QDBusAbstractAdaptor, QDBusConnection, QDBusMessage, QDBusObjectPath,
-    )
-    _HAVE_QTDBUS = True
-except ImportError:  # headless or minimal PySide6 builds
-    QDBusAbstractAdaptor = None  # type: ignore[assignment]
-    _HAVE_QTDBUS = False
-
-try:
-    from PySide6.QtCore import ClassInfo as _QtClassInfo  # PySide6 >= 6.10
-except ImportError:
-    _QtClassInfo = None
-try:
-    from PySide6.QtCore import Q_CLASSINFO as _QtQClassInfo  # PySide6 < 6.10
-except ImportError:
-    _QtQClassInfo = None
-
-
-def _mpris_iface_decorator(name: str):
-    """Class decorator registering the 'D-Bus Interface' class info."""
-    if _QtClassInfo is not None:
-        return _QtClassInfo(**{"D-Bus Interface": name})
-    return lambda cls: cls
-
-
-def _mpris_iface_body(name: str):
-    """Legacy in-class-body spelling of the same 'D-Bus Interface' info."""
-    if _QtQClassInfo is not None:
-        return _QtQClassInfo("D-Bus Interface", name)
-    return None
-
-
-if _HAVE_QTDBUS:
-
-    @_mpris_iface_decorator("org.mpris.MediaPlayer2")
-    class _MprisRoot(QDBusAbstractAdaptor):
-        """org.mpris.MediaPlayer2 — application identity/lifecycle."""
-
-        _mpris_iface_body("org.mpris.MediaPlayer2")
-
-        def __init__(self, window):
-            super().__init__(window)
-            self._window = window
-
-        @Slot()
-        def Raise(self):
-            window = self._window
-            window.showNormal()
-            window.raise_()
-            window.activateWindow()
-
-        @Slot()
-        def Quit(self):
-            self._window.close()
-
-        def _identity(self) -> str:
-            return "MPCASU"
-
-        def _desktop_entry(self) -> str:
-            return "mpcasu"  # packaging/mpcasu.desktop
-
-        def _uri_schemes(self) -> list:
-            return ["file", "http", "https", "rtsp", "rtmp", "udp", "rtp",
-                    "spotify", "ytdl"]
-
-        def _mime_types(self) -> list:
-            return sorted(
-                f"{kind}/x-{ext.lstrip('.')}" if ext == ".casu" else f"{kind}/{ext.lstrip('.')}"
-                for ext, kind in (
-                    (".mp3", "audio"), (".flac", "audio"), (".wav", "audio"),
-                    (".ogg", "audio"), (".m4a", "audio"), (".opus", "audio"),
-                    (".aac", "audio"), (".aiff", "audio"), (".mp4", "video"),
-                    (".mkv", "video"), (".webm", "video"), (".mov", "video"),
-                    (".casu", "application"),
-                ))
-
-        Identity = Property(str, _identity, constant=True)
-        DesktopEntry = Property(str, _desktop_entry, constant=True)
-        CanQuit = Property(bool, lambda self: True, constant=True)
-        CanRaise = Property(bool, lambda self: True, constant=True)
-        HasTrackList = Property(bool, lambda self: False, constant=True)
-        SupportedUriSchemes = Property("QStringList", _uri_schemes, constant=True)
-        SupportedMimeTypes = Property("QStringList", _mime_types, constant=True)
-
-    @_mpris_iface_decorator(_MPRIS_PLAYER_INTERFACE)
-    class _MprisPlayer(QDBusAbstractAdaptor):
-        """org.mpris.MediaPlayer2.Player — transport, status and metadata."""
-
-        _mpris_iface_body(_MPRIS_PLAYER_INTERFACE)
-
-        # Declared as a Qt signal so QtDBus broadcasts it with the correct
-        # interface and an int64 ('x') payload.
-        Seeked = Signal("qlonglong")
-
-        def __init__(self, window):
-            super().__init__(window)
-            self._window = window
-
-        # --- property backends ---
-
-        def _playback_status(self) -> str:
-            window = self._window
-            backend = getattr(window, "backend", None)
-            if backend is None:
-                return "Stopped"
-            if getattr(window, "_paused", False):
-                return "Paused"
-            try:
-                state = backend.state()
-            except Exception:
-                return "Stopped"
-            if state in {PlaybackState.PLAYING, PlaybackState.LOADING,
-                         PlaybackState.READY}:
-                return "Playing"
-            if state == PlaybackState.PAUSED:
-                return "Paused"
-            return "Stopped"
-
-        def _loop_status(self) -> str:
-            return {"off": "None", "one": "Track",
-                    "all": "Playlist"}[getattr(self._window, "_repeat_mode", "off")]
-
-        def _set_loop_status(self, value) -> None:
-            mode = {"None": "off", "Track": "one",
-                    "Playlist": "all"}.get(str(value))
-            if mode is not None:
-                self._window._set_repeat_mode(mode)
-
-        def _shuffle(self) -> bool:
-            return bool(getattr(self._window, "_shuffle", False))
-
-        def _set_shuffle(self, value) -> None:
-            self._window._toggle_shuffle(bool(value))
-
-        def _metadata(self) -> dict:
-            window = self._window
-            current = getattr(window, "current", None)
-            # pathlib collapses "//" in URLs, so prefer the untouched
-            # original string the player was started with.
-            network = str(getattr(window, "_network_source", None) or "")
-            if current is None and not network:
-                return {}
-            source_text = network or str(current)
-            if "://" in source_text:
-                url = source_text
-            else:
-                url = source_text
-                try:
-                    url = current.as_uri()
-                except (ValueError, AttributeError):
-                    pass
-            meta = {
-                "mpris:trackid": QDBusObjectPath(
-                    "/org/mpcasu/track/"
-                    + hashlib.sha1(source_text.encode("utf-8", "replace")).hexdigest()[:16]),
-                "xesam:url": url,
-            }
-            try:
-                title = window._display_title(Path(source_text))
-            except Exception:
-                title = getattr(current, "name", "")
-            if title:
-                meta["xesam:title"] = str(title)
-            duration = float(getattr(window, "duration", 0.0) or 0.0)
-            if duration > 0:
-                meta["mpris:length"] = int(duration * 1_000_000)
-            return meta
-
-        def _volume(self) -> float:
-            window = self._window
-            if getattr(window, "_muted", False):
-                return 0.0
-            return max(0.0, min(2.0, float(getattr(window, "_volume", 100)) / 100.0))
-
-        def _set_volume(self, value) -> None:
-            clamped = max(0.0, min(2.0, float(value)))
-            self._window._on_volume_slider(int(round(clamped * 100)))
-
-        def _position_us(self) -> int:
-            backend = getattr(self._window, "backend", None)
-            if backend is None:
-                return 0
-            try:
-                pos = float(backend.position())
-            except Exception:
-                pos = 0.0
-            return int(max(0.0, pos) * 1_000_000)
-
-        def _rate(self) -> float:
-            return float(getattr(self._window, "_rate", 1.0) or 1.0)
-
-        PlaybackStatus = Property(str, _playback_status)
-        LoopStatus = Property(str, _loop_status, _set_loop_status)
-        Shuffle = Property(bool, _shuffle, _set_shuffle)
-        Metadata = Property("QVariantMap", _metadata)
-        Volume = Property(float, _volume, _set_volume)
-        Position = Property("qlonglong", _position_us)
-        Rate = Property(float, _rate)
-        MinimumRate = Property(float, _rate, constant=True)
-        MaximumRate = Property(float, _rate, constant=True)
-        CanControl = Property(bool, lambda self: True, constant=True)
-        CanPlay = Property(bool, lambda self: True, constant=True)
-        CanPause = Property(bool, lambda self: True, constant=True)
-        CanSeek = Property(bool, lambda self: True, constant=True)
-        CanGoNext = Property(bool, lambda self: True, constant=True)
-        CanGoPrevious = Property(bool, lambda self: True, constant=True)
-
-        # --- transport methods ---
-
-        @Slot()
-        def Play(self):
-            window = self._window
-            if window.backend is None:
-                window.play_selected()
-            elif window._paused:
-                window.pause()
-
-        @Slot()
-        def Pause(self):
-            window = self._window
-            if window.backend is not None and not window._paused:
-                window.pause()
-
-        @Slot()
-        def PlayPause(self):
-            self._window.toggle_playback()
-
-        @Slot()
-        def Stop(self):
-            self._window.stop()
-
-        @Slot()
-        def Next(self):
-            self._window.play_next()
-
-        @Slot()
-        def Previous(self):
-            self._window.play_previous()
-
-        @Slot("qlonglong")
-        def Seek(self, offset_us):
-            window = self._window
-            if window.backend is None:
-                return
-            limit = float(getattr(window, "duration", 0.0) or 0.0)
-            target = float(self.Position) + float(offset_us) / 1_000_000
-            if limit > 0:
-                target = min(target, limit)
-            window._do_seek(max(0.0, target))
-
-        @Slot(QDBusObjectPath, "qlonglong")
-        def SetPosition(self, track_id, position_us):
-            if self._window.backend is None:
-                return
-            self._window._do_seek(max(0.0, float(position_us) / 1_000_000))
-
-        @Slot(str)
-        def OpenUri(self, uri):
-            window = self._window
-            text = str(uri)
-            if "://" in text or text.startswith(("spotify:", "ytdl:")):
-                window._play_network_source(text)
-            else:
-                window.play_selected(Path(text))
-
-    class _MprisNotifier:
-        """Diff-based org.freedesktop.DBus.Properties.PropertiesChanged emitter.
-
-        MainWindow._poll() calls refresh() every 200 ms; changed properties
-        are broadcast so desktop clients stay in sync without polling.
-        """
-
-        _TRACKED = ("PlaybackStatus", "LoopStatus", "Shuffle", "Metadata",
-                    "Volume")
-
-        def __init__(self, window, bus, player, service):
-            self._window = window
-            self._bus = bus
-            self._player = player
-            self._service = service
-            self._last: dict = {}
-
-        def _value(self, name: str):
-            value = getattr(self._player, name)
-            return value() if callable(value) else value
-
-        def _snapshot_value(self, value):
-            if isinstance(value, dict):
-                return {key: self._dbus_path_str(item)
-                        if isinstance(item, QDBusObjectPath) else item
-                        for key, item in value.items()}
-            return value
-
-        @staticmethod
-        def _dbus_path_str(item) -> str:
-            # str(QDBusObjectPath) yields the object repr (no __str__), so
-            # always go through path() for a stable, comparable value.
-            getter = getattr(item, "path", None)
-            return str(getter()) if callable(getter) else str(item)
-
-        def refresh(self) -> None:
-            changed = {}
-            for name in self._TRACKED:
-                value = self._value(name)
-                if self._last.get(name) != self._snapshot_value(value):
-                    self._last[name] = self._snapshot_value(value)
-                    changed[name] = value
-            if not changed:
-                return
-            message = QDBusMessage.createSignal(
-                _MPRIS_PATH, "org.freedesktop.DBus.Properties",
-                "PropertiesChanged")
-            message.setArguments([_MPRIS_PLAYER_INTERFACE, changed, []])
-            self._bus.send(message)
-
-        def seeked(self, seconds: float) -> None:
-            try:
-                self._player.Seeked.emit(int(round(float(seconds) * 1_000_000)))
-            except (RuntimeError, TypeError, ValueError):
-                pass
-
-        def close(self) -> None:
-            try:
-                self._bus.unregisterService(self._service)
-            except Exception:
-                pass
-
-
-def _register_mpris(window):
-    """Export the player on the session bus; returns a notifier or None."""
-    if not _HAVE_QTDBUS:
-        return None
-    try:
-        bus = QDBusConnection.sessionBus()
-        if not bus.isConnected():
-            return None
-        root = _MprisRoot(window)
-        player = _MprisPlayer(window)
-        service = _MPRIS_SERVICE
-        if not bus.registerService(service):
-            service = f"{_MPRIS_SERVICE}.instance{os.getpid()}"
-            if not bus.registerService(service):
-                return None
-        if not bus.registerObject(_MPRIS_PATH, window,
-                                  QDBusConnection.ExportAdaptors):
-            return None
-        return _MprisNotifier(window, bus, player, service)
-    except Exception:
-        return None
