@@ -5,20 +5,25 @@ ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 STAGE="$(mktemp -d)"
 trap 'rm -rf "$STAGE"' EXIT
 
+# Single source of truth for the product version (repo-root VERSION file).
+VERSION="$(tr -d '[:space:]' < "$ROOT/VERSION")"
+test -n "$VERSION"
+
 mkdir -p "$STAGE/DEBIAN" "$STAGE/usr/bin" "$STAGE/usr/share/mpcasu-player" \
   "$STAGE/usr/share/applications" "$STAGE/usr/share/icons/hicolor/256x256/apps"
 
 cp -a "$ROOT/src/desktop/." "$STAGE/usr/share/mpcasu-player/"
 cp -a "$ROOT/src/windows/assets" "$STAGE/usr/share/mpcasu-player/"
 find "$STAGE" -type f \( -name "*.pyc" -o -name "*.pyo" \) -delete
+find "$STAGE" -type f -name "*.bak" -delete
 cp "$ROOT/src/windows/assets/mpcasu_player_icon.png" "$STAGE/usr/share/icons/hicolor/256x256/apps/mpcasu-player.png"
 
 install -m 0755 "$ROOT/packaging/linux/mpcasu-player" "$STAGE/usr/bin/mpcasu-player"
 install -m 0644 "$ROOT/packaging/linux/mpcasu-player.desktop" "$STAGE/usr/share/applications/mpcasu-player.desktop"
 
-cat > "$STAGE/DEBIAN/control" <<'EOF'
+cat > "$STAGE/DEBIAN/control" <<EOF
 Package: mpcasu-player
-Version: 7.0.0
+Version: $VERSION
 Section: video
 Priority: optional
 Architecture: all
@@ -35,5 +40,7 @@ find /usr/share/mpcasu-player -depth -type d -name __pycache__ -exec rm -rf {} +
 POSTINST
 chmod 0755 "$STAGE/DEBIAN/postinst"
 mkdir -p "$ROOT/dist"
+# Reproducible build: fixed mtime + sorted archive entries (parity with CODEC build_debs.sh).
+export SOURCE_DATE_EPOCH=0
 find "$STAGE" -exec touch -h -d '@0' {} +
-dpkg-deb --build --root-owner-group "$STAGE" "$ROOT/dist/mpcasu-player_7.0.0_all.deb" >/dev/null
+dpkg-deb --build --root-owner-group "$STAGE" "$ROOT/dist/mpcasu-player_${VERSION}_all.deb" >/dev/null

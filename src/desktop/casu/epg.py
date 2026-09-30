@@ -1,7 +1,9 @@
 """Bounded Extended-M3U and XMLTV support shared by MPCASU front ends."""
 from __future__ import annotations
 
+import ipaddress
 import re
+import socket
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
@@ -111,18 +113,83 @@ def _read_bytes(path: str | Path, maximum: int, label: str) -> bytes:
     return raw
 
 
-def fetch_document(url: str, *, max_bytes: int, timeout: float = FETCH_TIMEOUT_SECONDS) -> bytes:
-    """Fetch one explicit HTTP(S) guide/catalog with hard size and time bounds."""
+def _is_rebound_address(address: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    """True when the address must not be fetched from (SSRF guard).
+
+    Mirrors the PHP catalog.php filter (FILTER_FLAG_NO_PRIV_RANGE |
+    FILTER_FLAG_NO_RES_RANGE): loopback, private, link-local, reserved and
+    documentation ranges are refused for IPv4 and IPv6 alike. IPv4-mapped
+    IPv6 addresses are classified by their embedded IPv4 part.
+    """
+    if getattr(address, "ipv4_mapped", None) is not None:
+        address = address.ipv4_mapped  # type: ignore[union-attr]
+    return (address.is_loopback or address.is_private or address.is_link_local
+            or address.is_reserved or address.is_multicast or address.is_unspecified)
+
+
+def _assert_public_target(host: str, port: int | None) -> None:
+    """Refuse hostnames/hosts that resolve (or point) at private networks.
+
+    Server-side catalog fetches must not become an SSRF probe: every address
+    the resolver returns is checked, so a DNS record pointing inwards
+    (127.0.0.1, 10/8, 169.254.169.254 metadata, fc00::/7 …) rejects the URL
+    before any request leaves the process.
+    """
+    if not host:
+        raise EpgError("catalog host is missing")
+    literal = host.strip("[]")
+    try:
+        address = ipaddress.ip_address(literal)
+    except ValueError:
+        address = None
+    if address is not None:
+        if _is_rebound_address(address):
+            raise EpgError("catalog host points at a private network")
+        return
+    try:
+        infos = socket.getaddrinfo(literal, port or 0, proto=socket.IPPROTO_TCP)
+    except OSError as exc:
+        raise EpgError("catalog host cannot be resolved") from exc
+    if not infos:
+        raise EpgError("catalog host cannot be resolved")
+    for info in infos:
+        sockaddr = info[4]
+        try:
+            address = ipaddress.ip_address(sockaddr[0])
+        except ValueError:
+            raise EpgError("catalog host resolved to an unusable address")
+        if _is_rebound_address(address):
+            raise EpgError("catalog host points at a private network")
+
+
+def fetch_document(url: str, *, max_bytes: int,
+                   timeout: float = FETCH_TIMEOUT_SECONDS,
+                   allow_private_target: bool = False) -> bytes:
+    """Fetch one explicit HTTP(S) guide/catalog with hard size and time bounds.
+
+    ``allow_private_target`` exists for tests that serve the catalog from a
+    local loopback server; production callers must never set it, keeping the
+    SSRF guard (private/loopback/link-local targets refused, DNS-rebinding
+    safe) unconditionally on.
+    """
     value = _bounded(url, "catalog URL", MAX_URL_BYTES)
     parsed = urllib.parse.urlsplit(value)
     if parsed.scheme.lower() not in {"http", "https"} or not parsed.hostname:
         raise EpgError("remote catalog URL must use HTTP or HTTPS")
+    if parsed.username or parsed.password:
+        raise EpgError("catalog URL must not embed credentials")
+    if not allow_private_target:
+        _assert_public_target(parsed.hostname, parsed.port)
     request = urllib.request.Request(value, headers={"User-Agent": "MPCASU/1.0 EPG"})
     try:
         with urllib.request.urlopen(request, timeout=max(1.0, min(60.0, timeout))) as response:
             final = urllib.parse.urlsplit(response.geturl())
             if final.scheme.lower() not in {"http", "https"}:
                 raise EpgError("catalog redirect left HTTP(S)")
+            if not allow_private_target:
+                # Re-validate after every redirect hop: the Location target
+                # must pass the same private-network guard as the initial URL.
+                _assert_public_target(final.hostname, final.port)
             declared = response.headers.get("Content-Length")
             if declared is not None and int(declared) > max_bytes:
                 raise EpgError("remote catalog exceeds its safety limit")

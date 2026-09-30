@@ -140,7 +140,7 @@ def _older_mpcasu_peer() -> int | None:
                 cmd = handle.read().decode("utf-8", "replace")
         except OSError:
             continue
-        if "mpcasu_qt.app" not in cmd:
+        if not _is_mpcasu_qt_cmdline(cmd):
             continue
         if mine is None:
             return pid
@@ -148,6 +148,25 @@ def _older_mpcasu_peer() -> int | None:
         if other is not None and other < mine:
             return pid
     return None
+
+
+def _is_mpcasu_qt_cmdline(cmdline: str) -> bool:
+    """True only for real mpcasu_qt.app launches: ``python[3] -m
+    mpcasu_qt.app [args]`` (NUL-separated argv).
+
+    A bare substring match ("mpcasu_qt.app" appears anywhere) also matched
+    editors (vim mpcasu_qt/app.py), greps and shells that merely MENTION the
+    module, making the new launch refuse to start ("already running").
+    """
+    argv = [part for part in cmdline.split("\0") if part]
+    if len(argv) < 3:
+        return False
+    executable = os.path.basename(argv[0])
+    if not (executable == "python" or executable.startswith("python3")):
+        return False
+    if argv[1] != "-m" or argv[2] != "mpcasu_qt.app":
+        return False
+    return True
 
 
 def _log_peer_processes() -> None:

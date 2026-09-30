@@ -46,28 +46,33 @@ def resolve_media_location(value: str, *, timeout_seconds: float = 30.0) -> str:
     if not executable:
         raise LocationResolutionError(
             "YouTube playback requires yt-dlp; install it or open a direct stream URL")
-    try:
-        result = subprocess.run([
-            executable, "--no-playlist", "--no-warnings", "--no-progress",
-            "--socket-timeout", "15",
-            # yt-dlp's current automatic client can select android_vr.  Its
-            # CDN URL is reproducibly rejected with HTTP 403, including by
-            # yt-dlp's own downloader.  The regular Android client returns a
-            # byte-range-capable combined MP4 accepted by the MPCASU proxy.
-            "--extractor-args", "youtube:player_client=android",
-            "--get-url", "--format",
-            "best[protocol^=http][vcodec!=none][acodec!=none]/best[protocol^=http]/best",
-            source,
-        ], check=False, text=True, stdout=subprocess.PIPE,
-           stderr=subprocess.PIPE, timeout=max(1.0, float(timeout_seconds)))
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        raise LocationResolutionError("YouTube stream resolution timed out or failed") from exc
-    urls = [line.strip() for line in result.stdout.splitlines() if line.strip()]
-    if result.returncode or len(urls) != 1:
+    # yt-dlp's automatic client selection can pick android_vr, whose CDN URLs
+    # are reproducibly rejected with HTTP 403 (including by yt-dlp itself).
+    # Try a chain of explicit clients: the default selection first (newest
+    # yt-dlp behavior, e.g. when android is rotated out), then the regular
+    # android client, which returns a byte-range-capable combined MP4 that
+    # the MPCASU proxy accepts. First success wins.
+    client_chain = ("default,android", "android")
+    last_error = ""
+    for player_client in client_chain:
+        try:
+            result = subprocess.run([
+                executable, "--no-playlist", "--no-warnings", "--no-progress",
+                "--socket-timeout", "15",
+                "--extractor-args", f"youtube:player_client={player_client}",
+                "--get-url", "--format",
+                "best[protocol^=http][vcodec!=none][acodec!=none]/best[protocol^=http]/best",
+                source,
+            ], check=False, text=True, stdout=subprocess.PIPE,
+               stderr=subprocess.PIPE, timeout=max(1.0, float(timeout_seconds)))
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise LocationResolutionError(
+                "YouTube stream resolution timed out or failed") from exc
+        urls = [line.strip() for line in result.stdout.splitlines() if line.strip()]
+        if not result.returncode and len(urls) == 1:
+            parsed = urlparse(urls[0])
+            if parsed.scheme in {"http", "https"} and parsed.netloc:
+                return urls[0]
         detail = result.stderr.strip().splitlines()
-        message = detail[-1][:300] if detail else "no playable combined stream was found"
-        raise LocationResolutionError(f"YouTube stream resolution failed: {message}")
-    parsed = urlparse(urls[0])
-    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-        raise LocationResolutionError("yt-dlp returned an invalid media location")
-    return urls[0]
+        last_error = detail[-1][:300] if detail else "no playable combined stream was found"
+    raise LocationResolutionError(f"YouTube stream resolution failed: {last_error}")

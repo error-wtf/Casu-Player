@@ -3,11 +3,12 @@ Unicode True
 !include "LogicLib.nsh"
 
 !define PRODUCT "MPCASU Player"
-!define VERSION "7.0.0"
+; v7.8: single source of truth — repo-root VERSION file, written by build-player.sh / CI.
+!define /file VERSION "..\..\VERSION"
 !define STAGE "..\..\dist\windows\MPCASU-Player"
 
 Name "${PRODUCT} ${VERSION}"
-OutFile "..\..\dist\MPCASU-Player-Setup-7.0.0.exe"
+OutFile "..\..\dist\MPCASU-Player-Setup-${VERSION}.exe"
 InstallDir "$LOCALAPPDATA\MPCASU Player"
 RequestExecutionLevel user
 

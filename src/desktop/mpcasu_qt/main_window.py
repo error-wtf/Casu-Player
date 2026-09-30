@@ -81,6 +81,18 @@ MEDIA_EXTENSIONS = {".mp4", ".mp3", ".mkv", ".m4v", ".mov", ".flac", ".wav", ".o
 AUDIO_EXTENSIONS = {".mp3", ".flac", ".wav", ".ogg", ".m4a", ".aac", ".opus", ".aiff", ".alac"}
 
 
+def _log_startup(message: str) -> None:
+    """Best-effort append to the shared startup.log (never raises)."""
+    try:
+        config_dir = Path(os.environ.get("XDG_CONFIG_HOME",
+                                         str(Path.home() / ".config"))) / "mpcasu"
+        config_dir.mkdir(parents=True, exist_ok=True)
+        with (config_dir / "startup.log").open("a", encoding="utf-8") as handle:
+            handle.write(f"main_window: {message}\n")
+    except OSError:
+        pass
+
+
 class ChapterTimeline(QSlider):
     """Seek slider with chapter markers painted on top."""
 
@@ -1241,11 +1253,16 @@ class MainWindow(QMainWindow):
         self._playlist_pane.moveRequested.connect(self._on_playlist_move)
         self._playlist_pane.favoriteRequested.connect(self._on_queue_favorite)
         self._playlist_pane.orderChanged.connect(self._apply_queue_order)
+        self._playlist_pane.mergeRequested.connect(self._on_playlist_merge)
         self._playlist_pane.childPlayRequested.connect(self._on_queue_child_play)
         self._playlist_pane.childRemoveRequested.connect(self._on_child_remove_from_playlist)
         self._playlist_pane.childMoveRequested.connect(self._on_child_move_to_playlist)
         self._playlist_pane.saveRequested.connect(self.save_playlist)
         self._playlist_pane.loadRequested.connect(self.load_playlist)
+        # Playlist editor shortcuts (previously dead UI): create a new
+        # playlist file, or append the currently playing media to one.
+        self._playlist_pane.newPlaylistRequested.connect(self._new_playlist_from_pane)
+        self._playlist_pane.addCurrentToPlaylistRequested.connect(self._add_current_to_playlist)
         self._random = random.SystemRandom()
         self._playlist_pane.shuffle_btn.toggled.connect(self._toggle_shuffle)
         self._playlist_pane.repeat_btn.clicked.connect(self._cycle_repeat)
@@ -1257,7 +1274,6 @@ class MainWindow(QMainWindow):
             self._repeat_btn.setText("↻" if self._repeat_mode == "off" else
                                      ("↻1" if self._repeat_mode == "one" else "↻∞"))
             self._repeat_btn.setProperty("on", "true" if self._repeat_mode != "off" else "false")
-        self._playlist_pane.repeat_btn.clicked.connect(self._cycle_repeat)
         body.addWidget(self._playlist_pane)
 
         main_layout.addLayout(body)
@@ -1724,8 +1740,23 @@ class MainWindow(QMainWindow):
     def _cycle_repeat(self) -> None:
         values = ("off", "all", "one")
         self._repeat_mode = values[(values.index(self._repeat_mode) + 1) % len(values)]
-        settings = self.settings_store.load()
-        self.settings_store.save(replace(settings, repeat_mode=self._repeat_mode))
+        self._set_repeat_mode(self._repeat_mode)
+
+    def _set_repeat_mode(self, mode: str) -> None:
+        """Set an explicit repeat mode (MPRIS/D-Bus LoopStatus, internal UI).
+
+        Persists the setting and updates BOTH repeat controls; invalid
+        values are ignored (MPRIS maps unknown D-Bus values the same way)."""
+        if mode not in ("off", "all", "one"):
+            return
+        self._repeat_mode = mode
+        try:
+            settings = self.settings_store.load()
+            self.settings_store.save(replace(settings, repeat_mode=self._repeat_mode))
+        except (OSError, CasuError):
+            # Settings persistence is best effort here: the in-memory mode
+            # still switches, a broken store must not kill the D-Bus slot.
+            pass
         self._playlist_pane.repeat_btn.setText(f"Repeat {self._repeat_mode}")
         if hasattr(self, "_repeat_btn"):
             self._repeat_btn.setText("↻" if self._repeat_mode == "off" else
@@ -1733,6 +1764,9 @@ class MainWindow(QMainWindow):
             self._repeat_btn.setProperty("on", "true" if self._repeat_mode != "off" else "false")
             self._repeat_btn.style().unpolish(self._repeat_btn)
             self._repeat_btn.style().polish(self._repeat_btn)
+        notifier = getattr(self, "_mpris_notifier", None)
+        if notifier is not None:
+            notifier.refresh()
         self.status(f"Repeat mode: {self._repeat_mode}")
 
     def play_next(self, automatic: bool = False):
@@ -2489,7 +2523,8 @@ class MainWindow(QMainWindow):
     def _rename_queue_row(self, row: int):
         if row < 0:
             return
-        item = self._playlist_pane.tree.topLevelItem(row)
+        # renameRequested carries MODEL indices; map to the visible tree item.
+        item = self._playlist_pane.item_for_model_index(row)
         if item is None:
             return
         current = item.text(0)
@@ -2521,7 +2556,13 @@ class MainWindow(QMainWindow):
         self._record_split_mode = str(settings.record_split_mode)
         self._volume_slider.setValue(self._volume)
         self._apply_backend_settings()
-        self._apply_playback_rate()
+        try:
+            self._apply_playback_rate()
+        except BackendError as exc:
+            # A dying backend must not abort this Qt slot: everything below
+            # (mute icon, visualizer reload, save feedback) used to be skipped
+            # silently, which is exactly the "Apply does not save" illusion.
+            self.status(f"Playback rate not applied: {exc}")
         self._mute_btn.setText("×" if self._muted else "♪")
         if self._viz_mode == "off":
             self._visualizer.configure("off", (), (), 0.0)
@@ -3264,6 +3305,15 @@ class MainWindow(QMainWindow):
         return "EPG loaded"
 
     def _options_action(self, action: str):
+        if action.startswith("save-error:"):
+            # OptionsPage._apply could not persist the settings (full disk,
+            # read-only config dir, …): surface it instead of silently doing
+            # nothing, and log to startup.log for post-mortem.
+            detail = action.split(":", 1)[1]
+            self.toast(f"Could not save settings: {detail}")
+            self.status(f"Settings NOT saved — {detail}")
+            _log_startup(f"options apply failed: {detail}")
+            return
         if action == "clear-cache":
             import shutil, tempfile
             cache_dir = Path(tempfile.gettempdir()) / "yt-dlp"
@@ -3365,11 +3415,20 @@ class MainWindow(QMainWindow):
         the loopback proxy is transport only. The proxy is started on the GUI
         thread AFTER the previous session is fully stopped, so playback
         cleanup can never destroy it before libVLC opens it.
+
+        The player session is NOT torn down before the resolve: a failed or
+        slow resolve must not blank the stage to the "Drop media here" hint
+        (the previous media keeps playing until the new one is ready).
         """
-        self.stop()
         self._show_player_page()
         self.status("Resolving YouTube stream (yt-dlp)…")
-        self._now_playing_bar.set_now_playing(label or "YouTube")
+        if self.backend is None:
+            # Idle stage: show a loading caption instead of the misleading
+            # "Drop media here" hint while yt-dlp works. Audio-stage mode lets
+            # the Qt caption sit on the idle surface; real playback resets it
+            # in _on_resolve_ready (stop() -> _audio_stage = False).
+            self._audio_stage = True
+            self._set_caption(f"Resolving YouTube…\n{label or url}")
         self._yt_source_url = url
         self._resolve_generation += 1
         generation = self._resolve_generation
@@ -3474,8 +3533,9 @@ class MainWindow(QMainWindow):
             _, direct_url, source_url = resolved
             # Transport only: the loopback media URL goes into the normal
             # LibVLCBackend/PlaybackController pipeline. The previous session
-            # (and its proxy) was already stopped in _play_youtube; the NEW
-            # proxy is started here and must survive until the source stops.
+            # (and its proxy) is stopped HERE — after a successful resolve —
+            # so a failed resolve never blanks the stage.
+            self._now_playing_bar.set_now_playing(label or source_url)
             self.stop()
             try:
                 media_url = self._yt_stream.start(
@@ -3483,8 +3543,9 @@ class MainWindow(QMainWindow):
                     refresh=lambda u=source_url: resolve_media_location(u),
                 )
             except (YouTubeProxyError, OSError, ValueError) as exc:
+                self._audio_stage = True
+                self._set_caption(f"YouTube stream unavailable\n{exc}")
                 self.status(f"YouTube stream unavailable: {exc}")
-                self.toast(f"YouTube stream unavailable: {exc}")
                 return
             self._open_external_source(
                 media_url, display_label=label, youtube=True, preserve_proxy=True)
@@ -3495,6 +3556,11 @@ class MainWindow(QMainWindow):
         generation, detail = payload
         if generation != self._resolve_generation:
             return
+        if self.backend is None:
+            # Idle stage: keep the failure visible as a persistent caption
+            # instead of a 2.6 s toast over the "Drop media here" hint.
+            self._audio_stage = True
+            self._set_caption(f"Could not resolve network source\n{detail}")
         self.status(f"Could not resolve network source: {detail}")
         self.toast(f"Could not resolve network source: {detail}")
 
@@ -3911,6 +3977,48 @@ class MainWindow(QMainWindow):
             if not isinstance(item, str) and item.suffix.lower() in PlaylistPane.PLAYLIST_SUFFIXES:
                 playlists.append(item)
         return playlists
+
+    def _new_playlist_from_pane(self):
+        """'New playlist' button: pick a name, create the file, queue it."""
+        target = self._choose_playlist_target(
+            [], title="New playlist",
+            label="Playlist name (e.g. mylist.m3u):")
+        if target is None:
+            return
+        if not target.exists():
+            try:
+                save_playlist_file(target, PlaylistModel())
+            except (PlaylistError, OSError) as exc:
+                self.toast(f"Could not create playlist: {exc}")
+                return
+        try:
+            self.playlist_model.add((target,))
+        except PlaylistError as exc:
+            self.status(str(exc))
+            return
+        self._invalidate_play_seq()
+        self._render_playlist()
+        self.status(f"Playlist created · {target.name}")
+
+    def _add_current_to_playlist(self):
+        """'Add current media' button: append what is playing (local file or
+        network/YouTube source) to an existing or new playlist."""
+        source = str(getattr(self, "_network_source", "") or "") \
+            if getattr(self, "_network_source", None) else ""
+        if not source and self.current is not None:
+            source = str(self.current)
+        if not source:
+            selected = self._selected_playlist_row()
+            try:
+                item = (self.playlist_model.item(selected)
+                        if selected is not None and selected >= 0 else None)
+            except PlaylistError:
+                item = None
+            source = str(item) if item is not None else ""
+        if not source:
+            self.toast("Nothing playing to add — play media first")
+            return
+        self._on_playlist_merge([source])
 
     def _choose_playlist_target(self, playlists: list, *, title: str,
                                 label: str) -> Path | None:
@@ -4488,9 +4596,25 @@ class MainWindow(QMainWindow):
     def _restore_session(self):
         try:
             payload = json.loads(self._session_file.read_text(encoding="utf-8"))
-            self.add_files([Path(v) for v in payload.get("playlist", []) if Path(v).is_file()])
-            self._resume_source = str(payload.get("current", "")) or None
-            self._resume_position = max(0.0, float(payload.get("position", 0.0)))
+            entries = []
+            for value in payload.get("playlist", []):
+                text = str(value)
+                # Keep stream URLs (http/…) as well as local files: the queue
+                # is mixed, dropping URLs truncated every restored session.
+                if text.startswith(("http://", "https://", "rtsp://", "rtmp://",
+                                    "udp://", "rtp://", "ftp://", "smb://")):
+                    entries.append(text)
+                elif Path(text).is_file():
+                    entries.append(Path(text))
+            self.add_files(entries)
+            # resume_playback setting gates position restore (v7.8.1: the
+            # checkbox previously never had any effect).
+            if self.settings_store.load().resume_playback:
+                self._resume_source = str(payload.get("current", "")) or None
+                self._resume_position = max(0.0, float(payload.get("position", 0.0)))
+            else:
+                self._resume_source = None
+                self._resume_position = 0.0
             geometry = payload.get("geometry")
             if isinstance(geometry, str) and geometry:
                 try:
@@ -4505,7 +4629,13 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event):
         if getattr(self, "_yt_stream", None) is not None:
             self._yt_stream.stop()
-        resume_position = self.backend.position() if self.backend else self._seek_slider._position
+        try:
+            resume_position = self.backend.position() if self.backend \
+                else self._seek_slider._position
+        except (BackendError, CasuError):
+            # A dying backend (ERROR state) must not abort closeEvent: the
+            # session/settings/MPRIS cleanup below would be skipped entirely.
+            resume_position = self._seek_slider._position
         self._persist_media_preferences()
         try:
             self._session_file.parent.mkdir(parents=True, exist_ok=True)
@@ -4529,7 +4659,7 @@ class MainWindow(QMainWindow):
                 pass
         try:
             self._save_effective_settings()
-        except OSError:
+        except (OSError, CasuError):
             pass
         if self._mpris_notifier is not None:
             self._mpris_notifier.close()

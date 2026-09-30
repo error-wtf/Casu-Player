@@ -21,6 +21,7 @@ from pathlib import Path
 from dataclasses import replace
 
 from casu import __version__
+from casu.core import CasuError
 from casu.playlist import PlaylistError, load_playlist_file, playlist_names
 
 from PySide6.QtCore import Qt, Signal
@@ -579,16 +580,15 @@ class OptionsPage(QFrame):
         layout.addLayout(viz_row)
 
         section("CACHE")
-        cache_row = QHBoxLayout()
-        self._cache_spin = QSpinBox()
-        self._cache_spin.setObjectName("IconButton")
-        self._cache_spin.setRange(64, 8192)
-        self._cache_spin.setSuffix(" MiB")
-        self._cache_spin.setValue(settings.cache_limit_mib)
-        cache_row.addWidget(self._cache_spin)
+        # cache_limit_mib is intentionally NOT editable here (v7.8.1): the
+        # value had no consumer anywhere (no yt-dlp --limit-rate/cache-size
+        # wiring), so the spin box was a dead option that made Apply look
+        # like it "does not save". The persisted field is kept for settings
+        # compatibility; only the cache-clearing action remains.
         clear_btn = QPushButton("Clear yt-dlp temp cache")
         clear_btn.setObjectName("IconButton")
         clear_btn.clicked.connect(lambda: self.actionRequested.emit("clear-cache"))
+        cache_row = QHBoxLayout()
         cache_row.addWidget(clear_btn)
         cache_row.addStretch()
         layout.addLayout(cache_row)
@@ -703,13 +703,24 @@ class OptionsPage(QFrame):
                           ytdlp_consent=self._consent_cb.isChecked(),
                           visualizer=str(self._viz_combo.currentData()),
                           resume_playback=self._resume_cb.isChecked(),
-                          cache_limit_mib=self._cache_spin.value(),
+                          # cache_limit_mib intentionally carried over from
+                          # the loaded settings: no consumer exists (dead
+                          # option removed from the UI, field kept for
+                          # settings-file compatibility).
+                          cache_limit_mib=settings.cache_limit_mib,
                           recordings_dir=self._recordings_entry.text().strip(),
                           record_split_minutes=self._split_spin.value(),
                           record_split_mode=str(self._split_mode_combo.currentData()),
                           record_format=str(self._format_combo.currentText()),
                           watched_folders=self._library_folders())
-        self._settings_store.save(updated)
+        try:
+            self._settings_store.save(updated)
+        except (OSError, CasuError) as exc:
+            # A Qt slot must never die on a full disk / read-only config dir:
+            # the user gets visible feedback instead of a silent no-op that
+            # looks like "Apply does not save".
+            self.actionRequested.emit(f"save-error:{exc}")
+            return
         self.applied.emit(updated)
 
     def _pick_recordings_dir(self):
@@ -764,7 +775,6 @@ class OptionsPage(QFrame):
         self._rate_spin.setValue(settings.rate)
         self._resume_cb.setChecked(settings.resume_playback)
         self._consent_cb.setChecked(settings.ytdlp_consent)
-        self._cache_spin.setValue(settings.cache_limit_mib)
         self._recordings_entry.setText(settings.recordings_dir)
         self._split_spin.setValue(settings.record_split_minutes)
         self._split_mode_combo.setCurrentIndex(max(
@@ -791,6 +801,14 @@ class EpgPage(QFrame):
         self.setObjectName("Page")
         self._catalog = None
         self._guide = None
+        # Loading M3U/XMLTV (file or URL) happens off the GUI thread: a slow
+        # or dead IPTV URL used to freeze the whole window for the HTTP
+        # timeout. Results come back through a queued bridge signal.
+        from mpcasu_qt.threads import _ThreadBridge
+        self._load_bridge = _ThreadBridge()
+        self._load_bridge.resultReady.connect(self._apply_loaded_source)
+        self._load_bridge.errorReady.connect(self._show_load_error)
+        self._load_token = 0
         self._build()
 
     def _build(self):
@@ -857,25 +875,53 @@ class EpgPage(QFrame):
     def _load_source(self, source: str):
         if not source:
             return
-        try:
-            if source.endswith((".xml", ".xmltv")):
-                from casu.epg import load_xmltv, fetch_xmltv
-                self._guide = fetch_xmltv(source) if source.startswith(("http://", "https://")) else load_xmltv(source)
-                self._status.setText(f"Guide loaded: {len(self._guide.entries) if hasattr(self._guide, 'entries') else ''} programmes")
-                self._sync_host_epg()
-                self._render()
-                return
-            from casu.epg import load_m3u, fetch_m3u
-            self._catalog = fetch_m3u(source) if source.startswith(("http://", "https://")) else load_m3u(source)
+        self._load_token += 1
+        token = self._load_token
+        self._status.setText("Loading playlist / guide…")
+
+        def worker():
+            try:
+                if source.endswith((".xml", ".xmltv")):
+                    from casu.epg import load_xmltv, fetch_xmltv
+                    guide = fetch_xmltv(source) if source.startswith(("http://", "https://")) \
+                        else load_xmltv(source)
+                    self._load_bridge.resultReady.emit((token, "guide", guide))
+                    return
+                from casu.epg import load_m3u, fetch_m3u
+                catalog = fetch_m3u(source) if source.startswith(("http://", "https://")) \
+                    else load_m3u(source)
+                self._load_bridge.resultReady.emit((token, "catalog", catalog))
+            except Exception as exc:  # noqa: BLE001 - loader failures are UI errors
+                self._load_bridge.errorReady.emit((token, str(exc)))
+
+        import threading
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _apply_loaded_source(self, payload):
+        token, kind, loaded = payload
+        if token != self._load_token:
+            return  # a newer load superseded this one
+        if kind == "guide":
+            self._guide = loaded
+            self._status.setText(
+                f"Guide loaded: {len(self._guide.entries) if hasattr(self._guide, 'entries') else ''} programmes")
+        else:
+            self._catalog = loaded
             self._status.setText(f"{len(self._catalog.channels)} channels loaded")
-            self._sync_host_epg()
-            self._render()
-        except Exception as exc:  # noqa: BLE001 - show any loader failure inline
-            self._status.setText(f"Load failed: {exc}")
+        self._sync_host_epg()
+        self._render()
+
+    def _show_load_error(self, payload):
+        token, detail = payload
+        if token != self._load_token:
+            return
+        self._status.setText(f"Load failed: {detail}")
 
     def _sync_host_epg(self):
-        host = self.parent()
-        if host is None or not hasattr(host, "_epg_catalog"):
+        # After reparenting into the center stack, parent() is the QStackedWidget,
+        # not the MainWindow — self.window() reaches the actual main window.
+        host = self.window()
+        if not hasattr(host, "_epg_catalog"):
             return
         host._epg_catalog = self._catalog
         host._epg_guide = self._guide

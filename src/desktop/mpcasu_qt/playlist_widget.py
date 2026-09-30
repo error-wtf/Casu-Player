@@ -45,6 +45,12 @@ from casu.playlist import (
 from casu.tags import metadata_for
 from casu.thumbnail import thumbnail_for
 
+# Tree items carry their QUEUE MODEL index in this role. Under an active
+# view filter (Local files/Streams/…) the tree shows only a subset, so tree
+# rows and model indices diverge; every consumer must map through this role.
+_MODEL_INDEX_ROLE = Qt.UserRole + 2
+
+
 class QueueTree(QTreeWidget):
     """Queue list with drag-reorder, Delete removal and a context menu."""
 
@@ -92,9 +98,22 @@ class QueueTree(QTreeWidget):
 
     def keyPressEvent(self, event):
         if event.key() in (Qt.Key_Delete, Qt.Key_Backspace):
-            rows = sorted({self.indexOfTopLevelItem(item)
-                           for item in self.selectedItems()
-                           if self.indexOfTopLevelItem(item) >= 0}, reverse=True)
+            # Model indices, not tree rows: under a view filter the tree
+            # shows a subset and tree rows would delete the wrong entries.
+            indexes = set()
+            for item in self.selectedItems():
+                if item.parent() is not None:
+                    continue
+                value = item.data(0, _MODEL_INDEX_ROLE)
+                if value is None:
+                    continue
+                try:
+                    index = int(value)
+                except (TypeError, ValueError):
+                    continue
+                if index >= 0:
+                    indexes.add(index)
+            rows = sorted(indexes, reverse=True)
             if rows:
                 self.removePressed.emit(rows)
                 return
@@ -106,8 +125,8 @@ class PlaylistPane(QFrame):
 
     playRequested = Signal(int)
     removeRequested = Signal(list)
-    # moveRequested: (delta, selected top-level rows) — moving a multi-
-    # selection (Ctrl/Shift) moves all selected rows together.
+    # moveRequested: (delta, selected model rows) — moving a multi-selection
+    # (Ctrl/Shift) moves all selected rows together.
     moveRequested = Signal(int, list)
     orderChanged = Signal(list)
     childPlayRequested = Signal(str)
@@ -120,12 +139,18 @@ class PlaylistPane(QFrame):
     # mergeRequested: emit the selected top-level rows (media/URLs) so the
     # main window can offer to merge/append them into a playlist.
     mergeRequested = Signal(list)
-    # childRemoveRequested/childMoveRequested: playlist children taken out of
-    # their playlist file ("remove from playlist" / "move to playlist").
+    # Playlist children taken out of their playlist file ("remove from
+    # playlist" / "move to playlist").
     childRemoveRequested = Signal(list)
     childMoveRequested = Signal(list)
+    # v7.8.1: playlist editor shortcuts (previously Player-only dead UI).
     newPlaylistRequested = Signal()
     addCurrentToPlaylistRequested = Signal()
+
+    # All row-based signals (playRequested/removeRequested/moveRequested/
+    # favoriteRequested/renameRequested) emit MODEL indices, never tree rows:
+    # under an active view filter the tree shows a subset, so tree rows would
+    # address (and delete/move/favorite) the WRONG queue entries.
 
     PLAYLIST_SUFFIXES = {".cue", ".m3u", ".m3u8", ".pls", ".json", ".wpl", ".xspf",
                          ".jspf", ".asx", ".wmx", ".wvx", ".rmp", ".ram"}
@@ -175,10 +200,12 @@ class PlaylistPane(QFrame):
         playlist_actions.setSpacing(6)
         new_playlist_btn = QPushButton("New playlist")
         new_playlist_btn.setObjectName("IconButton")
+        new_playlist_btn.setToolTip("Create a new playlist file")
         new_playlist_btn.clicked.connect(lambda: self.newPlaylistRequested.emit())
         playlist_actions.addWidget(new_playlist_btn)
         add_current_btn = QPushButton("Add current media")
         add_current_btn.setObjectName("IconButton")
+        add_current_btn.setToolTip("Append the currently playing media to a playlist")
         add_current_btn.clicked.connect(
             lambda: self.addCurrentToPlaylistRequested.emit())
         playlist_actions.addWidget(add_current_btn)
@@ -272,8 +299,13 @@ class PlaylistPane(QFrame):
     # --- public API used by MainWindow ---
 
     def select_row(self, row: int):
-        if 0 <= row < self.tree.topLevelItemCount():
-            self.tree.setCurrentItem(self.tree.topLevelItem(row))
+        """Select the tree item for MODEL index ``row`` (no-op when the view
+        filter currently hides it)."""
+        for index in range(self.tree.topLevelItemCount()):
+            item = self.tree.topLevelItem(index)
+            if self._model_index_of(item) == row:
+                self.tree.setCurrentItem(item)
+                return
 
     def select_child(self, playlist_path, child_path):
         """Highlight a specific child of an expandable playlist group."""
@@ -295,18 +327,35 @@ class PlaylistPane(QFrame):
             return
 
     def selected_row(self) -> int:
+        """MODEL index of the first selected top-level item, or -1."""
         items = self.tree.selectedItems()
         for item in items:
-            row = self.tree.indexOfTopLevelItem(item)
-            if row >= 0:
-                return row
+            index = self._model_index_of(item)
+            if index >= 0:
+                return index
         return -1
 
     def selected_rows(self) -> list:
-        """Sorted top-level rows of the current (multi-)selection."""
-        return sorted({self.tree.indexOfTopLevelItem(item)
+        """Sorted MODEL indices of the current (multi-)selection."""
+        return sorted({self._model_index_of(item)
                        for item in self.tree.selectedItems()
-                       if self.tree.indexOfTopLevelItem(item) >= 0})
+                       if self._model_index_of(item) >= 0})
+
+    def _model_index_of(self, item) -> int:
+        """Model (queue) index stored on the tree item, or -1.
+
+        Qt.UserRole+2 is set in populate(); a missing value can only mean a
+        stale/foreign item, which maps to no queue row. NOTE: 0 is a valid
+        index — compare against None, not falsiness."""
+        if item is None:
+            return -1
+        value = item.data(0, _MODEL_INDEX_ROLE)
+        if value is None:
+            return -1
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return -1
 
     def selected_child(self) -> str | None:
         """Path/URL of the selected child of an expanded playlist group."""
@@ -333,6 +382,14 @@ class PlaylistPane(QFrame):
         if rows:
             self.removeRequested.emit(rows)
 
+    def item_for_model_index(self, index: int):
+        """Tree item currently representing MODEL index ``index``, or None."""
+        for row in range(self.tree.topLevelItemCount()):
+            item = self.tree.topLevelItem(row)
+            if self._model_index_of(item) == int(index):
+                return item
+        return None
+
     def select_rows(self, indexes: list):
         """Re-apply a multi-selection after a queue re-render."""
         want = {str(self._all_paths[i]) for i in indexes
@@ -352,11 +409,21 @@ class PlaylistPane(QFrame):
         view = str(self._view_combo.currentData() or "all")
         visible = [(index, path) for index, path in enumerate(self._all_paths)
                    if self._matches(path, view)]
+        # Drag-reorder reorders the WHOLE queue; under a view filter the tree
+        # only shows a subset and a drop could not express a valid full order
+        # (orderChanged would silently no-op on the count mismatch or, worse,
+        # misorder the queue). Reordering stays available in the "All items"
+        # view; search hiding (items stay in the tree) is unaffected.
+        filtered = len(visible) != len(self._all_paths)
+        self.tree.setDragDropMode(
+            QAbstractItemView.NoDragDrop if filtered
+            else QAbstractItemView.InternalMove)
         self.tree.blockSignals(True)
         self.tree.clear()
         for _index, path in visible:
             item = QTreeWidgetItem([self._label_for(path)])
             item.setData(0, Qt.UserRole, str(path))
+            item.setData(0, _MODEL_INDEX_ROLE, _index)
             item.setToolTip(0, str(path))
             item.setText(1, self._badge_for(path))
             item.setTextAlignment(1, Qt.AlignRight | Qt.AlignVCenter)
@@ -582,19 +649,17 @@ class PlaylistPane(QFrame):
         return name
 
     def _on_clear(self):
-        rows = sorted({self.tree.indexOfTopLevelItem(item)
-                       for item in self.tree.selectedItems()
-                       if self.tree.indexOfTopLevelItem(item) >= 0}, reverse=True)
-        self.removeRequested.emit(rows)
+        self.removeRequested.emit(self.selected_rows())
 
     def _on_double_click(self, item, _column):
         if item.parent() is None and self._is_playlist(item.data(0, Qt.UserRole) or ""):
             item.setExpanded(not item.isExpanded())
             return
-        row = self.tree.indexOfTopLevelItem(item)
-        if row >= 0:
-            self.playRequested.emit(row)
-            return
+        if item.parent() is None:
+            index = self._model_index_of(item)
+            if index >= 0:
+                self.playRequested.emit(index)
+                return
         parent = item.parent()
         if parent is not None and item.data(0, Qt.UserRole):
             self.childPlayRequested.emit(str(item.data(0, Qt.UserRole)))
@@ -678,10 +743,11 @@ class PlaylistPane(QFrame):
             menu.exec(self.tree.viewport().mapToGlobal(position))
             return
         selected = self.tree.selectedItems()
-        top_rows = sorted({self.tree.indexOfTopLevelItem(sel)
+        top_rows = sorted({self._model_index_of(sel)
                            for sel in selected
-                           if self.tree.indexOfTopLevelItem(sel) >= 0})
-        row = self.tree.indexOfTopLevelItem(item)
+                           if sel.parent() is None
+                           and self._model_index_of(sel) >= 0})
+        row = self._model_index_of(item) if item.parent() is None else -1
         # If the right-clicked item is not part of the current multi-selection,
         # collapse the action set to that single item.
         if row >= 0 and row not in top_rows:
@@ -691,7 +757,7 @@ class PlaylistPane(QFrame):
             label = f"Play" if count <= 1 else f"Play ({count} items)"
             menu.addAction(label, lambda: self.playRequested.emit(top_rows[0]))
             if count == 1:
-                single = self.tree.topLevelItem(row)
+                single = item
                 if single.childCount() or self._is_playlist(str(single.data(0, Qt.UserRole))):
                     if single.isExpanded():
                         menu.addAction("Collapse", single.setCollapsed)

@@ -114,11 +114,39 @@ enum YouTubeClient {
     static func resolve(_ videoID: String) async throws -> URL {
         let root = try await request("player", body: ["context": context, "videoId": videoID])
         guard let streaming = root["streamingData"] as? [String: Any] else { throw YouTubeError.unplayable }
-        let formats = ((streaming["formats"] as? [[String: Any]]) ?? []) + ((streaming["adaptiveFormats"] as? [[String: Any]]) ?? [])
-        let preferred = formats.first { ($0["mimeType"] as? String)?.hasPrefix("video/mp4") == true && $0["url"] != nil }
-            ?? formats.first { ($0["mimeType"] as? String)?.hasPrefix("audio/") == true && $0["url"] != nil }
+        // v7.8: gemuxte progressive Formate bevorzugen (itag 22/18: Audio+Video in
+        // einer Datei) — AVPlayer kann getrennte DASH-Adaptivstreams nicht muxen;
+        // ein adaptives video/mp4 wäre stummes Video. Reihenfolge:
+        // 1. progressives video/mp4 (höchster itag: 720p vor 360p),
+        // 2. beliebiges progressives Format mit URL,
+        // 3. bestes audio/mp4 (Ton statt stummem Bild).
+        let progressive = (streaming["formats"] as? [[String: Any]]) ?? []
+        let adaptive = (streaming["adaptiveFormats"] as? [[String: Any]]) ?? []
+        func itag(_ format: [String: Any]) -> Int { format["itag"] as? Int ?? 0 }
+        let preferred = progressive
+            .filter { ($0["mimeType"] as? String)?.hasPrefix("video/mp4") == true && $0["url"] != nil }
+            .sorted { itag($0) > itag($1) }
+            .first
+            ?? progressive.first { $0["url"] != nil }
+            ?? adaptive
+                .filter { ($0["mimeType"] as? String)?.hasPrefix("audio/mp4") == true && $0["url"] != nil }
+                .sorted { ($0["bitrate"] as? Int ?? 0) > ($1["bitrate"] as? Int ?? 0) }
+                .first
+            ?? adaptive.first { ($0["mimeType"] as? String)?.hasPrefix("audio/") == true && $0["url"] != nil }
         guard let value = preferred?["url"] as? String, let url = URL(string: value) else { throw YouTubeError.unplayable }
+        try await preflight(url)
         return url
+    }
+
+    /// v7.8: Innertube-Medien-URLs sind IP-gebunden und können po_token erfordern.
+    /// Ein 403 würde im AVPlayer erst beim Playback als kryptischer Fehler auftreten —
+    /// hier früh und mit klarem Text melden, statt ein stummes/leeres Item zu erzeugen.
+    private static func preflight(_ url: URL) async throws {
+        var request = URLRequest(url: url)
+        request.httpMethod = "HEAD"
+        let (_, response) = try await URLSession.shared.data(for: request)
+        let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+        guard status != 401, status != 403 else { throw YouTubeError.forbidden }
     }
 
     private static func request(_ method: String, body: [String: Any]) async throws -> [String: Any] {
@@ -153,6 +181,12 @@ enum YouTubeClient {
 }
 
 enum YouTubeError: LocalizedError {
-    case network, unplayable
-    var errorDescription: String? { self == .network ? "YouTube request failed." : "YouTube item has no directly playable format." }
+    case network, unplayable, forbidden
+    var errorDescription: String? {
+        switch self {
+        case .network: return "YouTube request failed."
+        case .unplayable: return "YouTube item has no directly playable format."
+        case .forbidden: return "YouTube refused the media URL (403). The stream may require a token or is region-locked; try another video."
+        }
+    }
 }
