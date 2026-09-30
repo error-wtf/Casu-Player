@@ -234,13 +234,11 @@ class WebPlayerTabs(QWidget):
                 view.load(QUrl(target))
             return
         if provider not in self._views:
-            provider = "spotify"
+            provider = "hearthis"
         self._tabs.setCurrentIndex(keys.index(provider))
         if query:
             self._entries[provider].setText(query)
         target = web_player_url(provider, query=query, url=url)
-        if provider == "spotify":
-            target = target.replace("https://open.spotify.com/embed/", "https://open.spotify.com/", 1)
         view = self._views[provider]
         if view is None:
             return

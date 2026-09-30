@@ -16,13 +16,11 @@ import android.graphics.Shader;
 public final class ProviderIcons {
 
     private static final int SIZE = 96;
-    private static Bitmap spotify, tidal, hearthis, netflix, browse;
+    private static Bitmap hearthis, netflix, browse;
 
     public static Bitmap get(String provider) {
         if (provider == null) return null;
         switch (provider.toUpperCase(Locale.ROOT)) {
-            case "SPOTIFY":  return spotify != null ? spotify : (spotify = drawSpotify());
-            case "TIDAL":    return tidal != null ? tidal : (tidal = drawTidal());
             case "HEARTHIS": return hearthis != null ? hearthis : (hearthis = drawHearThis());
             case "NETFLIX":  return netflix != null ? netflix : (netflix = drawNetflix());
             case "BROWSE":   return browse != null ? browse : (browse = drawBrowse());
@@ -32,60 +30,6 @@ public final class ProviderIcons {
 
     private static Bitmap newBitmap() {
         return Bitmap.createBitmap(SIZE, SIZE, Bitmap.Config.ARGB_8888);
-    }
-
-    // ── SPOTIFY: green circle + sound-wave arcs ────────────────────────
-    private static Bitmap drawSpotify() {
-        Bitmap b = newBitmap();
-        Canvas c = new Canvas(b);
-        // dark circle
-        Paint bg = new Paint(Paint.ANTI_ALIAS_FLAG);
-        bg.setColor(Color.parseColor("#191414"));
-        c.drawCircle(SIZE/2f, SIZE/2f, SIZE/2f, bg);
-        // three green arcs (sound wave)
-        Paint arc = new Paint(Paint.ANTI_ALIAS_FLAG);
-        arc.setColor(Color.parseColor("#1DB954"));
-        arc.setStyle(Paint.Style.STROKE);
-        arc.setStrokeCap(Paint.Cap.ROUND);
-        float cx = SIZE/2f, cy = SIZE/2f;
-        for (int i = 0; i < 3; i++) {
-            float r = 16 + i * 11;
-            arc.setStrokeWidth(4.5f - i * 0.8f);
-            RectF rect = new RectF(cx - r, cy - r, cx + r, cy + r);
-            c.drawArc(rect, -30, 60 + i * 20, false, arc);
-            // mirror
-            c.drawArc(rect, 180 + 30, -(60 + i * 20), false, arc);
-        }
-        return b;
-    }
-
-    // ── TIDAL: dark bg + cyan T-shape / diamond ────────────────────────
-    private static Bitmap drawTidal() {
-        Bitmap b = newBitmap();
-        Canvas c = new Canvas(b);
-        Paint bg = new Paint(Paint.ANTI_ALIAS_FLAG);
-        bg.setColor(Color.parseColor("#000000"));
-        c.drawCircle(SIZE/2f, SIZE/2f, SIZE/2f, bg);
-        Paint fg = new Paint(Paint.ANTI_ALIAS_FLAG);
-        fg.setColor(Color.parseColor("#00FFFF"));
-        fg.setStyle(Paint.Style.STROKE);
-        fg.setStrokeWidth(5f);
-        fg.setStrokeCap(Paint.Cap.ROUND);
-        float cx = SIZE/2f, cy = SIZE/2f;
-        // horizontal bar of T
-        c.drawLine(cx - 22, cy - 16, cx + 22, cy - 16, fg);
-        // vertical bar of T
-        c.drawLine(cx, cy - 16, cx, cy + 20, fg);
-        // small diamond below
-        fg.setStyle(Paint.Style.FILL);
-        Path diamond = new Path();
-        diamond.moveTo(cx, cy + 10);
-        diamond.lineTo(cx + 10, cy + 20);
-        diamond.lineTo(cx, cy + 30);
-        diamond.lineTo(cx - 10, cy + 20);
-        diamond.close();
-        c.drawPath(diamond, fg);
-        return b;
     }
 
     // ── HEARTHIS: orange circle + sound wave ───────────────────────────

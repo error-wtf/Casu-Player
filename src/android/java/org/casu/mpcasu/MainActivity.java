@@ -71,14 +71,12 @@ public class MainActivity extends Activity implements PlayerEngine.Listener {
     private static final int TAB_PLAY = 0, TAB_QUEUE = 1, TAB_LIBRARY = 2,
             TAB_WEB = 3, TAB_SETTINGS = 4, TAB_IPTV = 5;
 
-    private static final String[] PROVIDER_NAMES = {"SPOTIFY", "HEARTHIS", "TIDAL", "NETFLIX", "BROWSE"};
+    private static final String[] PROVIDER_NAMES = {"HEARTHIS", "NETFLIX", "BROWSE"};
     private static final String[] PROVIDER_URLS = {
-            "https://open.spotify.com/", "https://hearthis.at/", "https://tidal.com/",
+            "https://hearthis.at/",
             "https://www.netflix.com/", "https://www.google.com/"};
     private static final int[] PROVIDER_COLORS = {
-            Color.parseColor("#1DB954"),  // Spotify green
             Color.parseColor("#FF6B35"),  // HearThis orange
-            Color.parseColor("#00FFFF"),  // Tidal cyan
             Color.parseColor("#E50914"),  // Netflix red
             Color.parseColor("#4285F4")}; // Browse blue
 

@@ -35,7 +35,7 @@ import android.widget.Toast;
 import java.util.ArrayList;
 import java.util.List;
 
-/** Embedded tabbed browser for the provider pages (Spotify/Tidal/HearThis/
+/** Embedded tabbed browser for the provider pages (HearThis/
  *  Netflix/Browse) — the Android twin of the Linux WEB PLAYERS sidebar.
  *
  *  Real browsing: logins survive (persistent cookies, DOM storage, popup

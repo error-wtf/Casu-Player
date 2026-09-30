@@ -47,7 +47,7 @@ def browser(monkeypatch):
     app.processEvents()
 
 
-@pytest.mark.parametrize('provider', ['spotify', 'netflix', 'tidal', 'hearthis'])
+@pytest.mark.parametrize('provider', ['netflix', 'hearthis'])
 def test_providers_load_in_their_own_view(browser, provider, monkeypatch):
     from casu import webproviders
     monkeypatch.setattr(webproviders, 'open_web_player', lambda *a, **kw: pytest.fail('External browser is forbidden'))
@@ -55,13 +55,6 @@ def test_providers_load_in_their_own_view(browser, provider, monkeypatch):
     widget.open(provider)
     assert loads == [(provider, webproviders.web_player_url(provider))]
 
-
-def test_spotify_full_player_not_embed_preview(browser):
-    widget, loads = browser
-    widget._entries['spotify'].setText('https://open.spotify.com/track/abc')
-    widget._submit('spotify')
-    widget.open('spotify', url='https://open.spotify.com/embed/album/def')
-    assert loads == [('spotify', 'https://open.spotify.com/track/abc'), ('spotify', 'https://open.spotify.com/album/def')]
 
 
 def test_browse_remains_embedded_after_popup_tabs(browser):

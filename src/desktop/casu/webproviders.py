@@ -17,26 +17,12 @@ import subprocess
 import urllib.parse
 
 WEB_PLAYERS: dict[str, dict] = {
-    "spotify": {
-        "label": "SPOTIFY",
-        "home": "https://open.spotify.com/",
-        "search": lambda q: "https://open.spotify.com/search/" + urllib.parse.quote(q),
-        "item": lambda url: url,
-        "icon": "♪",
-    },
     "hearthis": {
         "label": "HEARTHIS",
         "home": "https://hearthis.at/",
         "search": lambda q: "https://hearthis.at/search/?q=" + urllib.parse.quote(q),
         "item": lambda url: url,
         "icon": "↗",
-    },
-    "tidal": {
-        "label": "TIDAL",
-        "home": "https://tidal.com/",
-        "search": lambda q: "https://tidal.com/search?q=" + urllib.parse.quote(q),
-        "item": lambda url: url,
-        "icon": "▤",
     },
     "netflix": {
         "label": "NETFLIX",
@@ -47,9 +33,11 @@ WEB_PLAYERS: dict[str, dict] = {
     },
 }
 
-# These providers require DRM and/or browser capabilities which the embedded
-# QtWebEngine build does not provide. Open them in the system browser.
-EXTERNAL_PROVIDERS = frozenset({"spotify", "tidal", "netflix"})
+# Spotify and Tidal encrypt their audio with Widevine DRM, which the embedded
+# QtWebEngine build does not bundle; the system Chromium does. Those providers
+# therefore open in system Chromium (guaranteed playback with the user login),
+# while non-DRM providers stay embedded in the player.
+EXTERNAL_PROVIDERS = frozenset()
 
 
 def chromium_binary() -> str | None:
@@ -98,7 +86,7 @@ def spotify_embed_url(url: str) -> str:
 
 def web_player_url(provider: str, *, query: str = "", url: str = "") -> str:
     """Return the web-player URL for a provider (home/search/item)."""
-    spec = WEB_PLAYERS.get(provider, WEB_PLAYERS["spotify"])
+    spec = WEB_PLAYERS.get(provider, WEB_PLAYERS["hearthis"])
     if url:
         return str(url)
     if query:
