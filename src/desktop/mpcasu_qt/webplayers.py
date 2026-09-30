@@ -71,14 +71,43 @@ if _HAVE_WEBENGINE:
             super().__init__(profile, parent)
             self.owner = owner
             self.last_load_ok = True   # did the last navigation finish cleanly?
+            self._debug = bool(os.environ.get("MPCASU_WEB_DEBUG"))
+            import time as _time
+            self._t0 = _time.time()
             self.settings().setAttribute(QWebEngineSettings.FullScreenSupportEnabled, True)
             self.loadFinished.connect(self._track_load)
             self.fullScreenRequested.connect(self._fullscreen)
+            if self._debug:
+                import time as _time
+                def _log_started():
+                    print(f"[NAV+{ _time.time()-self._t0:.1f}s] loadStarted", flush=True)
+                def _log_url(u):
+                    print(f"[NAV+{_time.time()-self._t0:.1f}s] urlChanged {u.toString()[:100]}", flush=True)
+                def _log_finished(ok):
+                    print(f"[NAV+{_time.time()-self._t0:.1f}s] loadFinished ok={ok}", flush=True)
+                def _log_render(status):
+                    print(f"[NAV+{_time.time()-self._t0:.1f}s] renderProcessTerminated status={status}", flush=True)
+                def _log_console(level, msg, line, sid):
+                    if level >= 2:  # warn+error only
+                        print(f"[JS+{_time.time()-self._t0:.1f}s] lvl={level} {msg[:150]}", flush=True)
+                self.loadStarted.connect(_log_started)
+                self.urlChanged.connect(_log_url)
+                self.loadFinished.connect(_log_finished)
+                self.renderProcessTerminated.connect(_log_render)
+
+        def javaScriptConsoleMessage(self, level, message, line_number, source_id):
+            if getattr(self, "_debug", False) and level >= 2:
+                import time as _time
+                print(f"[JS+{_time.time()-self._t0:.1f}s] lvl={level} {message[:150]}", flush=True)
+            super().javaScriptConsoleMessage(level, message, line_number, source_id)
 
         def _track_load(self, ok):
             self.last_load_ok = bool(ok)
 
         def createWindow(self, window_type):
+            if getattr(self, "_debug", False):
+                import time as _time
+                print(f"[NAV+{_time.time()-self._t0:.1f}s] createWindow type={window_type}", flush=True)
             return self.owner._popup_page()
 
         def _fullscreen(self, request):
