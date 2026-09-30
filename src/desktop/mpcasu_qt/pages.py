@@ -758,14 +758,6 @@ class OptionsPage(QFrame):
             f"FFmpeg (convert/analysis): {'✓' if shutil.which('ffmpeg') else '✗ missing'}",
             f"yt-dlp (YouTube provider): {'✓' if shutil.which('yt-dlp') else '✗ missing'}",
         ]
-        from casu.spotify import spotdl_binary
-        if spotdl_binary():
-            lines.append("spotDL (Spotify provider): ✓")
-        else:
-            lines.append("spotDL (Spotify provider): ✗ not installed — "
-                         "python3 -m venv /opt/casu-spotdl && "
-                         "/opt/casu-spotdl/bin/pip install spotdl")
-        lines.append(f"Deno (optional spotDL helper): {'✓' if shutil.which('deno') else '– optional'}")
         return "\n".join(lines)
 
     def reload(self):

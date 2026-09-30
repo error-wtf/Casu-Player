@@ -178,8 +178,7 @@ class PlaylistPane(QFrame):
         self._view_combo.setObjectName("IconButton")
         for label, key in [("All items", "all"), ("Local files", "files"),
                            ("Streams / IPTV", "streams"), ("Playlists", "playlists"),
-                           ("CASU", "casu"), ("YouTube", "youtube"),
-                           ("Spotify", "spotify")]:
+                           ("CASU", "casu"), ("YouTube", "youtube")]:
             self._view_combo.addItem(label, key)
         self._view_combo.currentIndexChanged.connect(lambda *_: self._apply_view_filter())
         header_layout.addWidget(self._view_combo)
@@ -543,8 +542,6 @@ class PlaylistPane(QFrame):
             return low.endswith((".casu", ".mp5"))
         if view == "youtube":
             return "youtube.com" in low or "youtu.be" in low
-        if view == "spotify":
-            return "spotify.com" in low
         if view == "streams":
             return is_url and not self._is_playlist(path)
         return True

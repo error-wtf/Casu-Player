@@ -102,7 +102,7 @@ if _HAVE_QTDBUS:
 
         def _uri_schemes(self) -> list:
             return ["file", "http", "https", "rtsp", "rtmp", "udp", "rtp",
-                    "spotify", "ytdl"]
+                    "ytdl"]
 
         def _mime_types(self) -> list:
             return sorted(

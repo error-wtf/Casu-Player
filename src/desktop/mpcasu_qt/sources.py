@@ -35,7 +35,6 @@ from PySide6.QtWidgets import (
 )
 
 from casu.locations import is_youtube_url
-from casu.spotify import SpotifyError, expand_spotify, search_spotify
 
 
 class SourcesView(QFrame):
@@ -98,9 +97,7 @@ class SourcesView(QFrame):
         cf_layout.setContentsMargins(14, 12, 14, 12)
         cf_layout.setSpacing(8)
         notice = QLabel(
-            "Legal notice — YouTube search/playback uses yt-dlp (GNU GPL); "
-            "Spotify uses spotDL: Spotify metadata matched on YouTube "
-            "(metadata → match → YouTube audio source).\n"
+            "Legal notice — YouTube search/playback uses yt-dlp (GNU GPL). "
             "Stream URLs are resolved temporarily and never stored or "
             "redistributed. Personal use only.")
         notice.setObjectName("NowPlayingMeta")

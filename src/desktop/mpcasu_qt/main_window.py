@@ -55,9 +55,7 @@ from casu.playlist import (
     load_playlist_file, playlist_names, save_playlist_file,
 )
 from casu.settings import SettingsStore
-from casu.spotify import (SpotifyError, expand_spotify, fetch_spotify_metadata,
-                          is_spotify_url, open_spotify_web, resolve_spotify_url,
-                          search_spotify, spotify_kind, youtube_handoff_query)
+from casu.spotify import SpotifyError  # legacy playlist compat
 from casu.thumbnail import thumbnail_for
 from casu.waveform import decode_all_pcm, window_wave
 from casu.recording import MediaRecorder, RecordingError
@@ -340,7 +338,7 @@ class Sidebar(QFrame):
                          "PLAYLISTS", "IPTV / EPG"]),
             ("SEARCH", ["YOUTUBE"]),
             ("CASU", ["CASU FILES"]),
-            ("WEB PLAYERS", ["SPOTIFY", "HEARTHIS", "TIDAL", "NETFLIX", "BROWSE"]),
+            ("WEB PLAYERS", ["HEARTHIS", "NETFLIX", "BROWSE"]),
             ("SYSTEM", ["OPTIONS", "ABOUT"]),
         ]
         self.NAV_ICONS = {name: _nav_icon(name, QColor("#8a93a0"), QColor("#ff1e2d"))
@@ -1401,11 +1399,7 @@ class MainWindow(QMainWindow):
         if name == "YOUTUBE":
             self.show_sources("youtube")
             return
-        if name == "SPOTIFY":
-            self._open_web_player("spotify")
-            self._sidebar.set_active("SPOTIFY")
-            return
-        if name in ("HEARTHIS", "TIDAL", "NETFLIX", "BROWSE"):
+        if name in ("HEARTHIS", "NETFLIX", "BROWSE"):
             self._open_web_player(name.lower())
             self._sidebar.set_active(name)
             return
@@ -2303,7 +2297,7 @@ class MainWindow(QMainWindow):
     def _open_web_player(self, provider: str, *, query: str = "", url: str = ""):
         from casu.webproviders import WEB_PLAYERS
         label = ("BROWSE" if provider == "browse"
-                 else WEB_PLAYERS.get(provider, WEB_PLAYERS["spotify"])["label"])
+                 else WEB_PLAYERS.get(provider, WEB_PLAYERS["hearthis"])["label"])
         self._web_player_tabs.open(provider, query=query, url=url)
         self._center_stack.setCurrentWidget(self._web_player_tabs)
         self._topbar_title.setText(label)
@@ -3346,8 +3340,8 @@ class MainWindow(QMainWindow):
                 pass
             self._resolve_and_open_external_source(payload)
             return
-        if getattr(payload, "source", None) == "spotify" and is_spotify_url(payload.url):
-            self._open_web_player("spotify", url=payload.url)
+        if getattr(payload, "source", None) == "spotify":
+            self.status("Spotify integration removed — track skipped.")
             return
         if is_youtube_url(payload.url):
             self._queue_and_play(payload.url, label=payload.title)
