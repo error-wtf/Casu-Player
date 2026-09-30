@@ -233,11 +233,6 @@ def _nav_icon(name: str, color: QColor, active: QColor, size: int = 18) -> QIcon
             p.drawPolygon(QPolygonF([QPointF(c.x() - 3, c.y() - 5),
                                      QPointF(c.x() + 6, c.y()),
                                      QPointF(c.x() - 3, c.y() + 5)]))
-        elif name == "SPOTIFY":
-            for frac in (0.2, 0.38, 0.56):
-                r2 = r.adjusted(int(w * frac), int(h * frac),
-                                -int(w * frac), -int(h * frac))
-                p.drawArc(r2, -45 * 16, 90 * 16)
         elif name == "CASU FILES":
             half = min(w, h) * 0.35
             p.setBrush(tint)
@@ -254,15 +249,6 @@ def _nav_icon(name: str, color: QColor, active: QColor, size: int = 18) -> QIcon
                        QPointF(r.right(), r.top()))
             p.drawLine(QPointF(r.right(), r.top()),
                        QPointF(r.right(), r.top() + 6))
-        elif name == "TIDAL":
-            for y_off in (-3, 3):
-                pts = []
-                for i in range(20):
-                    frac = i / 19.0
-                    x = r.left() + w * frac
-                    y = c.y() + y_off + math.sin(frac * math.pi * 2) * h * 0.22
-                    pts.append(QPointF(x, y))
-                p.drawPolyline(QPolygonF(pts))
         elif name == "NETFLIX":
             top_l = QPointF(r.left() + 2, r.top())
             top_r = QPointF(r.right() - 2, r.top())
@@ -1217,7 +1203,7 @@ class MainWindow(QMainWindow):
         self._sources_view.closeRequested.connect(self._show_player_page)
         self._sources_view.webPlayerRequested.connect(self._open_web_player)
         self._sources_view.consentAccepted.connect(
-            lambda: self.status("yt-dlp consent saved — YouTube/Spotify enabled"))
+            lambda: self.status("yt-dlp consent saved — YouTube enabled"))
 
         self._center_stack = QStackedWidget()
         self._center_stack.addWidget(player_page)
@@ -1574,7 +1560,7 @@ class MainWindow(QMainWindow):
             self.status("Add a media file first.")
             return
         text = str(selected)
-        if "://" in text or text.startswith(("spotify:", "ytdl:")):
+        if "://" in text or text.startswith("ytdl:"):
             self._play_network_source(text)
             return
         path = selected
@@ -3470,22 +3456,6 @@ class MainWindow(QMainWindow):
             self._set_caption(title)
             self._recording_tag_boundary()
 
-    def _resolve_spotify_playback(self, url: str, *, title: str = "",
-                                  artist: str = "", display_label: str = ""):
-        self._resolve_generation += 1
-        generation = self._resolve_generation
-        self.status("Resolving Spotify track via spotDL…")
-
-        def worker():
-            try:
-                from casu.spotify import download_spotify_track
-                local = download_spotify_track(title, artist)
-            except (SpotifyError, OSError, ValueError) as exc:
-                self._resolve_bridge.errorReady.emit((generation, str(exc)))
-                return
-            self._resolve_bridge.resultReady.emit(
-                (generation, str(local), display_label or url))
-        threading.Thread(target=worker, daemon=True).start()
 
     def _resolve_and_open_external_source(self, source: str, *,
                                           display_label: str | None = None):

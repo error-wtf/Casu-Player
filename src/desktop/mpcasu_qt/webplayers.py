@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: LicenseRef-CASU-AntiCapitalist-1.4
 # SPDX-FileCopyrightText: 2026 Lino Casu
-"""Tabbed embedded web-player views (Spotify/Hearthis/Tidal/Netflix).
+"""Tabbed embedded web-player views (Hearthis/Netflix/Browse).
 
 Each provider gets its own tab with an embedded Chromium (QtWebEngine) view, a
 URL/search field and the official web player loaded through it. Direct URLs and

@@ -299,7 +299,7 @@ if _HAVE_QTDBUS:
         def OpenUri(self, uri):
             window = self._window
             text = str(uri)
-            if "://" in text or text.startswith(("spotify:", "ytdl:")):
+            if "://" in text or text.startswith("ytdl:"):
                 window._play_network_source(text)
             else:
                 window.play_selected(Path(text))

@@ -4,7 +4,7 @@
 #   This program is free software: you can redistribute it and/or modify
 #   it under the terms of the CASU Anti-Capitalist License 1.4.
 # ---------------------------------------------------------------------
-"""SourcesView: in-window YouTube/Spotify search and network stream entry.
+"""SourcesView: in-window YouTube search and network stream entry.
 
 Extracted from main_window.py in the v7.8 modularization pass. Owns the
 consent gate, search entry, result list and status line; playback routing
