@@ -19,7 +19,7 @@ from .browser_runtime import configure_widevine
 WIDEVINE_PATH = configure_widevine()
 
 try:
-    from PySide6.QtWebEngineCore import QWebEnginePage, QWebEngineProfile, QWebEngineSettings
+    from PySide6.QtWebEngineCore import (QWebEnginePage, QWebEngineProfile, QWebEngineSettings, qWebEngineChromiumVersion)
     from PySide6.QtWebEngineWidgets import QWebEngineView
     _HAVE_WEBENGINE = True
 except ImportError:
@@ -46,6 +46,22 @@ def _persistent_profile(parent) -> object | None:
     # Keep Chromium's real engine/platform versions, without Qt's application
     # token, which some sites mistake for an unsupported mobile/embed client.
     profile.setHttpUserAgent(re.sub(r"\sQtWebEngine/[\d.]+", "", profile.httpUserAgent()))
+    # Keep the User-Agent Client Hints consistent with that UA. The default
+    # hints advertise brand "Chromium" (no "Google Chrome") while the stripped
+    # UA says "Chrome/…" — exactly the header/JS identity mismatch that
+    # anti-bot systems (DataDome, Google) score. Mirror the UA brand instead:
+    try:
+        hints = profile.clientHints()
+        chromium_version = qWebEngineChromiumVersion()
+        full = f"{chromium_version.major}.{chromium_version.minor}.{chromium_version.build}.{chromium_version.patch}" if hasattr(chromium_version, "major") else str(chromium_version)
+        hints.setFullVersion(full)
+        hints.setFullVersionList({
+            "Not:A-Brand": "24",
+            "Chromium": full,
+            "Google Chrome": full,
+        })
+    except Exception:
+        pass  # hints API unavailable on this Qt — UA-only fallback stays
     return profile
 
 
