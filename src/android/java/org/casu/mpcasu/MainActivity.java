@@ -697,7 +697,14 @@ public class MainActivity extends Activity implements PlayerEngine.Listener {
         if (tvMode || landscape) {
             page.setPadding(0, 0, 0, 0);
             stageParams.bottomMargin = 0;
-            // collect the control rows into one translucent overlay inside stage
+            // collect the control rows into one translucent overlay inside stage.
+            // The rows were added to `page` above; detach them first or the
+            // stage re-parent throws "child already has a parent" (TV crash).
+            for (View row : new View[]{meta, seekBar, times, secondary, recordRow, volumeRow}) {
+                if (row != null && row.getParent() instanceof ViewGroup) {
+                    ((ViewGroup) row.getParent()).removeView(row);
+                }
+            }
             LinearLayout overlay = new LinearLayout(this);
             overlay.setOrientation(LinearLayout.VERTICAL);
             overlay.setPadding(dp(48) / 2, dp(27) / 2, dp(48) / 2, dp(27) / 2);
