@@ -778,6 +778,7 @@ class MainWindow(QMainWindow):
         self.playlist_model = PlaylistModel()
 
         self._resolve_generation = 0
+        self._epg_video_mode = False
         self._resolve_bridge = _ThreadBridge()
         self._resolve_bridge.resultReady.connect(self._on_resolve_ready)
         self._resolve_bridge.errorReady.connect(self._on_resolve_failed)
@@ -2293,6 +2294,7 @@ class MainWindow(QMainWindow):
     def _show_player_page(self):
         self._center_stack.setCurrentIndex(0)
         self._topbar_title.setText("NOW PLAYING")
+        self._sidebar.set_active("NOW PLAYING")
         self._back_btn.hide()
         self._playlist_pane.show()
         if self._queue_drawer:
@@ -3308,6 +3310,9 @@ class MainWindow(QMainWindow):
         url = getattr(channel, "url", None) or ""
         name = getattr(channel, "name", str(channel))
         if url:
+            # IPTV channels are video: open with the video overlay rules
+            # (no audio visualizer over the native surface, no caption bar).
+            self._epg_video_mode = True
             self._resolve_and_open_external_source(url, display_label=name)
 
     def _on_source_activated(self, payload):
@@ -3541,6 +3546,11 @@ class MainWindow(QMainWindow):
 
     def _open_external_source(self, source: str, *, display_label: str | None = None,
                              youtube: bool = False, preserve_proxy: bool = False):
+        # IPTV/EPG channels are video sources: apply the same overlay rules as
+        # YouTube (no Qt overlay, no audio visualizer over the native surface).
+        if getattr(self, "_epg_video_mode", False):
+            youtube = True
+            self._epg_video_mode = False
         from casu.webproviders import provider_for_url
         provider = provider_for_url(str(source))
         if provider:
