@@ -28,13 +28,9 @@ def resolve_media_location(value: str, *, timeout_seconds: float = 30.0) -> str:
     source = value.strip()
     if not source or "\0" in source:
         raise LocationResolutionError("media URL is empty or invalid")
-    from .spotify import is_spotify_url as _is_spotify
-    from .spotify import SpotifyError, resolve_spotify_url
-    if _is_spotify(source):
-        try:
-            return resolve_spotify_url(source, timeout=timeout_seconds)
-        except SpotifyError as exc:
-            raise LocationResolutionError(str(exc)) from exc
+    if "spotify.com" in source.lower() or source.lower().startswith("spotify:"):
+        raise LocationResolutionError(
+            "Spotify integration was removed from MPCASU — cannot resolve this URL")
     if not is_youtube_url(source):
         return source
     executable = shutil.which("yt-dlp")

@@ -55,7 +55,6 @@ from casu.playlist import (
     load_playlist_file, playlist_names, save_playlist_file,
 )
 from casu.settings import SettingsStore
-from casu.spotify import SpotifyError  # legacy playlist compat
 from casu.thumbnail import thumbnail_for
 from casu.waveform import decode_all_pcm, window_wave
 from casu.recording import MediaRecorder, RecordingError
@@ -3481,7 +3480,7 @@ class MainWindow(QMainWindow):
         def worker():
             try:
                 resolved = resolve_media_location(source)
-            except (LocationResolutionError, SpotifyError, OSError,
+            except (LocationResolutionError, OSError,
                     ValueError, CasuError) as exc:
                 self._resolve_bridge.errorReady.emit((generation, str(exc)))
                 return

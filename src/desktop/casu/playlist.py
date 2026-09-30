@@ -680,10 +680,6 @@ def detect_entry_type(path: str | Path) -> str:
             host = parsed.hostname.lower() if parsed.hostname else ""
             if host in _YOUTUBE_HOSTS:
                 return "youtube"
-            # v7.8: Spotify before the generic http branch — open.spotify.com
-            # URLs were previously classified as plain http-streams.
-            if host and "spotify.com" in host:
-                return "spotify"
             if parsed.scheme in {"http", "https"}:
                 return "http-stream"
             if parsed.scheme in {"rtsp", "rtsps"}:
@@ -708,12 +704,6 @@ def detect_entry_type(path: str | Path) -> str:
        suffix in _EXT_XSPF or suffix in _EXT_JSPF or suffix in _EXT_ASX or \
        suffix in _EXT_RMP or suffix in _EXT_CUE:
         return "playlist"
-    try:
-        parsed = urlparse(str(source))
-        if parsed.hostname and "spotify.com" in parsed.hostname.lower():
-            return "spotify"
-    except ValueError:
-        pass
     return "local-file"
 
 
