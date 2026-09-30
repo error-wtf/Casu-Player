@@ -50,9 +50,7 @@ def chromium_binary() -> str | None:
 
 
 _PROVIDER_DOMAINS = {
-    "spotify": "spotify.com",
     "hearthis": "hearthis.at",
-    "tidal": "tidal.com",
     "netflix": "netflix.com",
 }
 
@@ -64,24 +62,6 @@ def provider_for_url(url: str) -> str | None:
         if domain in low:
             return key
     return None
-
-
-_SPOTIFY_ITEM_RE = re.compile(
-    r"^(https?://open\.spotify\.com)/(track|album|playlist|artist|show|episode)/([a-zA-Z0-9]+)(?:[?&#].*)?$"
-)
-
-
-def spotify_embed_url(url: str) -> str:
-    """Convert a Spotify item URL to its official embed URL.
-
-    Spotify blocks embedding the full web app, but provides official embed
-    players at ``open.spotify.com/embed/<type>/<id>`` which are iframe-safe.
-    Non-convertible URLs are returned unchanged.
-    """
-    match = _SPOTIFY_ITEM_RE.match((url or "").strip())
-    if match:
-        return f"{match.group(1)}/embed/{match.group(2)}/{match.group(3)}"
-    return (url or "").strip()
 
 
 def web_player_url(provider: str, *, query: str = "", url: str = "") -> str:

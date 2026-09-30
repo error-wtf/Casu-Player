@@ -231,26 +231,6 @@ class SourcesView(QFrame):
         self._status.setText(
             f"{len(found)} video(s)/playlist(s) added to the queue")
 
-    def _expand_spotify_url(self, url: str):
-        if self._searching:
-            return
-        self._searching = True
-        self._list.clear()
-        self._results = []
-        self._status.setText("Expanding Spotify playlist via spotDL…")
-
-        def worker():
-            from casu.search import SearchResult
-            try:
-                found = [SearchResult(
-                    title=r.title, url=r.url, duration=r.duration,
-                    uploader=r.artist or "Spotify", source="spotify")
-                    for r in expand_spotify(url)]
-            except SpotifyError as exc:
-                self._bridge.errorReady.emit(str(exc))
-            else:
-                self._bridge.resultReady.emit(found)
-        threading.Thread(target=worker, daemon=True).start()
 
     def _expand_youtube_playlist(self, url: str, title: str = ""):
         if self._searching:
@@ -271,8 +251,6 @@ class SourcesView(QFrame):
                 self._queue_bridge.resultReady.emit(found)
         threading.Thread(target=worker, daemon=True).start()
 
-    def _fetch_spotify_handoff(self, url: str):
-        self._open_web_player("spotify", url=url)
 
     def _run_search(self, query: str):
         if self._searching:
@@ -280,27 +258,16 @@ class SourcesView(QFrame):
         self._searching = True
         self._list.clear()
         self._results = []
-        if self._mode == "spotify":
-            self._status.setText("Searching Spotify via spotDL (open.spotify.com)…")
-        else:
-            self._status.setText("Searching YouTube via yt-dlp…")
-        mode = self._mode
+        self._status.setText("Searching YouTube via yt-dlp…")
         youtube_search_type = str(self._youtube_search_type.currentData() or "videos")
 
         def worker():
             try:
-                from casu.search import (SearchResult, search_youtube,
+                from casu.search import (search_youtube,
                                          search_youtube_playlists)
-                if mode == "spotify":
-                    found = [SearchResult(title=r.title, url=r.url,
-                                          duration=r.duration,
-                                          uploader=r.artist or "Spotify",
-                                          source="spotify")
-                             for r in search_spotify(query, limit=12)]
-                else:
-                    found = (search_youtube_playlists(query, limit=25)
-                             if youtube_search_type == "playlists"
-                             else search_youtube(query, limit=25))
+                found = (search_youtube_playlists(query, limit=25)
+                         if youtube_search_type == "playlists"
+                         else search_youtube(query, limit=25))
             except Exception as exc:  # noqa: BLE001 - surface any engine failure
                 self._bridge.errorReady.emit(str(exc))
             else:
