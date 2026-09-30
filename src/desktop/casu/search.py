@@ -4,11 +4,7 @@
 
 All search in this product runs against the YouTube index; the music variant
 is a convenience preset for music queries.  Results are always labelled with
-their real provider ("youtube") — never as Spotify.  Spotify search goes
-through spotDL (casu.spotify), which returns real Spotify track metadata and
-resolves each track to a matched playable audio source.  Results are metadata
-only — playback resolves each entry on demand and never writes downloads to
-disk.
+their real provider ("youtube").
 """
 from __future__ import annotations
 

@@ -606,7 +606,7 @@ class PlaylistPane(QFrame):
         if display:
             return display
         if text.startswith(("http://", "https://", "rtsp://", "rtmp://",
-                            "udp://", "rtp://", "spotify:", "ytdl:")):
+                            "udp://", "rtp://", "ytdl:")):
             return text
         cached = self._tag_titles.get(text)
         if cached is None:
