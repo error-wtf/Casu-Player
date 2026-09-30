@@ -26,7 +26,7 @@ except ImportError:
     QWebEnginePage = QWebEngineProfile = QWebEngineView = None
     _HAVE_WEBENGINE = False
 
-from casu.webproviders import WEB_PLAYERS, web_player_url
+from casu.webproviders import WEB_PLAYERS, web_player_url, _PROVIDER_DOMAINS as _PROVIDER_HOSTS
 
 BROWSE_URL = "https://duckduckgo.com/"
 
@@ -192,8 +192,20 @@ class WebPlayerTabs(QWidget):
         if provider == "spotify":
             target = target.replace("https://open.spotify.com/embed/", "https://open.spotify.com/", 1)
         view = self._views[provider]
-        if view is not None:
-            view.load(QUrl(target))
+        if view is None:
+            return
+        # Load-once lifecycle: a provider view that already runs its web app is
+        # only SHOWN again — never reloaded. Every reload restarts the whole SPA
+        # (all its API requests), which rate-limits accounts ("too many
+        # requests") and re-triggers anti-bot verdicts. A reload happens only
+        # for an empty/errored view or an explicitly different target.
+        current = view.url().toString() if hasattr(view, "url") else ""
+        already_home = (not query and not url) and bool(current) and (
+            current.rstrip("/") == target.rstrip("/")
+            or current.startswith("https://" + _PROVIDER_HOSTS.get(provider, "")))
+        if already_home:
+            return
+        view.load(QUrl(target))
 
     def play_video(self, url: str, title: str = "") -> bool:
         """Stream a direct media URL in an embedded <video> element (yt-dlp).
