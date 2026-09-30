@@ -70,8 +70,13 @@ if _HAVE_WEBENGINE:
         def __init__(self, profile, parent, owner):
             super().__init__(profile, parent)
             self.owner = owner
+            self.last_load_ok = True   # did the last navigation finish cleanly?
             self.settings().setAttribute(QWebEngineSettings.FullScreenSupportEnabled, True)
+            self.loadFinished.connect(self._track_load)
             self.fullScreenRequested.connect(self._fullscreen)
+
+        def _track_load(self, ok):
+            self.last_load_ok = bool(ok)
 
         def createWindow(self, window_type):
             return self.owner._popup_page()
@@ -210,16 +215,27 @@ class WebPlayerTabs(QWidget):
         view = self._views[provider]
         if view is None:
             return
+        if os.environ.get("MPCASU_WEB_DEBUG"):
+            import time as _t
+            print(f"[WEB] open provider={provider} query={query!r} url={url!r} "
+                  f"t={_t.time():.0f}", flush=True)
         # Load-once lifecycle: a provider view that already runs its web app is
         # only SHOWN again — never reloaded. Every reload restarts the whole SPA
         # (all its API requests), which rate-limits accounts ("too many
         # requests") and re-triggers anti-bot verdicts. A reload happens only
         # for an empty/errored view or an explicitly different target.
         current = view.url().toString() if hasattr(view, "url") else ""
-        already_home = (not query and not url) and bool(current) and (
+        page = view.page() if hasattr(view, "page") else None
+        load_was_ok = getattr(page, "last_load_ok", True) if page is not None else True
+        already_home = (not query and not url) and load_was_ok and bool(current) and (
             current.rstrip("/") == target.rstrip("/")
             or current.startswith("https://" + _PROVIDER_HOSTS.get(provider, "")))
         if already_home:
+            return
+        if page is not None and not load_was_ok:
+            # The view sits on an error body (e.g. an HTTP 429/5xx response kept
+            # the URL unchanged). Show the tab again and refresh it once.
+            page.reload()
             return
         view.load(QUrl(target))
 
