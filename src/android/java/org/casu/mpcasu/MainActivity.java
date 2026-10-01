@@ -1857,7 +1857,16 @@ public class MainActivity extends Activity implements PlayerEngine.Listener {
         results.setOrientation(LinearLayout.VERTICAL);
         results.setId(View.generateViewId());
         results.setTag("yt-results");
-        page.addView(results, new LinearLayout.LayoutParams(
+        // v7.8.1 TV fix: the results were in a plain non-scrollable
+        // LinearLayout — D-pad could reach only the rows above the fold,
+        // then focus fell through to the root and jumped to the main menu.
+        // A ScrollView scrolls with the focus and keeps D-pad navigation
+        // inside the result list.
+        android.widget.ScrollView resultsScroll = new android.widget.ScrollView(this);
+        resultsScroll.setVerticalScrollBarEnabled(true);
+        resultsScroll.addView(results, new ViewGroup.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        page.addView(resultsScroll, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
         return page;
     }
@@ -1918,6 +1927,9 @@ public class MainActivity extends Activity implements PlayerEngine.Listener {
                 for (YouTubeClient.Video video : finalFound) {
                     results.addView(youTubeResultRow(video));
                 }
+                // v7.8.1 TV: rows were added AFTER install-time prepare() —
+                // make them D-pad focusable now.
+                if (remoteFocus != null) remoteFocus.rearm();
             });
         }).start();
     }

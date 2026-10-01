@@ -66,6 +66,14 @@ public final class RemoteFocus extends View {
             for (int i=0;i<group.getChildCount();i++) prepare(group.getChildAt(i), ring);
         }
     }
+    /** Re-walk the view tree to make dynamically added views (e.g. YouTube
+     *  result rows) D-pad focusable and draw focus rings for them. */
+    public void rearm() {
+        prepare(decor, this);
+        hovered = null;
+        invalidate();
+    }
+
     public void pointer(MotionEvent event) {
         int action = event.getActionMasked();
         if (action == MotionEvent.ACTION_HOVER_EXIT) hovered = null;
