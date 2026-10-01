@@ -846,17 +846,17 @@ public class MainActivity extends Activity implements PlayerEngine.Listener {
             LinearLayout tvTransport = new LinearLayout(this);
             tvTransport.setOrientation(LinearLayout.HORIZONTAL);
             tvTransport.setGravity(Gravity.CENTER);
-            Button prevTv = transportButton("⏮", 15, TEXT);
+            Button prevTv = transportButton("⏮", 13, TEXT);
             prevTv.setOnClickListener(v -> { if (engine != null) engine.previous(); });
-            Button nextTv = transportButton("⏭", 15, TEXT);
+            Button nextTv = transportButton("⏭", 13, TEXT);
             nextTv.setOnClickListener(v -> { if (engine != null) engine.next(); });
-            fullscreenBtn = transportButton("⛶", 16, ACCENT);
+            fullscreenBtn = transportButton("⛶", 14, ACCENT);
             fullscreenBtn.setOnClickListener(v -> toggleVideoFullscreen());
-            playBtn = transportButton("▶", 20, ACCENT);
+            playBtn = transportButton("▶", 18, ACCENT);
             playBtn.setBackground(circleBackground());
             playBtn.setOnClickListener(v -> { if (engine != null) engine.playPause(); });
-            LinearLayout.LayoutParams playTvParams = new LinearLayout.LayoutParams(dp(48), dp(48));
-            playTvParams.setMargins(dp(12), 0, dp(12), 0);
+            LinearLayout.LayoutParams playTvParams = new LinearLayout.LayoutParams(dp(40), dp(40));
+            playTvParams.setMargins(dp(10), 0, dp(10), 0);
             playBtn.setLayoutParams(playTvParams);
             tvTransport.addView(prevTv);
             tvTransport.addView(playBtn);
@@ -865,23 +865,30 @@ public class MainActivity extends Activity implements PlayerEngine.Listener {
             View spacer = new View(this);
             tvTransport.addView(spacer, new LinearLayout.LayoutParams(0, 1, 1f));
             tvTransport.addView(fullscreenBtn,
-                    new LinearLayout.LayoutParams(dp(48), dp(48)));
+                    new LinearLayout.LayoutParams(dp(40), dp(40)));
+            tvTransport.setPadding(0, dp(2), 0, dp(2));
             panel.addView(tvTransport);
 
             panel.addView(secondary);
             panel.addView(recordRow);
             panel.addView(volumeRow, new LinearLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-            // compact hit targets: still D-pad-friendly (36dp) but everything
-            // fits below the stage without scrolling
-            int small = dp(36);
+            // compact hit targets: everything fits below the stage on one
+            // screen — smallButton() already caps rows at 28dp; this only
+            // squeezes the row spacing itself
+            int small = dp(28);
             for (Button b : new Button[]{shuffleBtn, repeatBtn, abBtn, rateBtn}) {
-                b.setMinHeight(small);
-                b.setMinimumWidth(small);
-                b.setTextSize(12);
+                b.setMinHeight(0);
+                b.setMinimumHeight(0);
+                b.setMinimumWidth(0);
+                b.setTextSize(11);
             }
-            recordBtn.setMinHeight(small);
-            recordBtn.setTextSize(12);
+            recordBtn.setMinHeight(0);
+            recordBtn.setMinimumHeight(0);
+            recordBtn.setTextSize(11);
+            for (View row : new View[]{secondary, recordRow, volumeRow, times}) {
+                row.setPadding(0, 0, 0, 0);
+            }
             // the panel lives in `page` BELOW the stage — real layout space,
             // no layer above the video, no focus ambiguity, no scrolling
             page.addView(panel, new LinearLayout.LayoutParams(
@@ -917,9 +924,14 @@ public class MainActivity extends Activity implements PlayerEngine.Listener {
         button.setTextColor(color);
         button.setTextSize(sizeSp);
         button.setBackgroundColor(Color.TRANSPARENT);
+        // v7.8.1 TV compact: was 56dp min — inflated the transport row far
+        // beyond the requested LayoutParams (min sizes win over wrap).
+        button.setMinWidth(0);
+        button.setMinHeight(0);
+        button.setMinimumWidth(0);
+        button.setMinimumHeight(0);
         button.setPadding(0, 0, 0, 0);
-        button.setMinWidth(dp(56));
-        button.setMinHeight(dp(56));
+        button.setIncludeFontPadding(false);
         return button;
     }
 
@@ -927,12 +939,18 @@ public class MainActivity extends Activity implements PlayerEngine.Listener {
         Button button = new Button(this);
         button.setText(symbol);
         button.setTextColor(TEXT);
-        button.setTextSize(14);
+        button.setTextSize(12);
         button.setBackgroundColor(Color.parseColor("#161a20"));
-        button.setPadding(dp(10), 0, dp(10), 0);
+        // v7.8.1 TV compact: flat padding, no inflated min sizes
+        button.setPadding(dp(6), 0, dp(6), 0);
+        button.setMinWidth(0);
+        button.setMinHeight(0);
+        button.setMinimumWidth(0);
+        button.setMinimumHeight(0);
+        button.setIncludeFontPadding(false);
         LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, dp(40));
-        params.setMargins(dp(4), 0, dp(4), 0);
+                ViewGroup.LayoutParams.WRAP_CONTENT, dp(28));
+        params.setMargins(dp(3), 0, dp(3), 0);
         button.setLayoutParams(params);
         return button;
     }
