@@ -699,6 +699,7 @@ public class MainActivity extends Activity implements PlayerEngine.Listener {
         transport.addView(prev);
         transport.addView(playBtn);
         transport.addView(next);
+        transport.setTag("phone-transport-row");
         page.addView(transport);
 
         // secondary row (compact: shuffle/repeat/A-B/snapshot/rate)
@@ -819,6 +820,11 @@ public class MainActivity extends Activity implements PlayerEngine.Listener {
                     ((ViewGroup) row.getParent()).removeView(row);
                 }
             }
+            // v7.8.1 fix: also remove the ORIGINAL phone transport row — it
+            // stayed in `page` and floated above the panel (duplicated
+            // prev/play/next, user photo showed both rows at once).
+            View phoneTransport = page.findViewWithTag("phone-transport-row");
+            if (phoneTransport != null) page.removeView(phoneTransport);
             LinearLayout panel = new LinearLayout(this);
             panel.setOrientation(LinearLayout.VERTICAL);
             panel.setPadding(dp(48) / 2, dp(27) / 2, dp(48) / 2, dp(27) / 2);
