@@ -827,28 +827,36 @@ public class MainActivity extends Activity implements PlayerEngine.Listener {
             if (phoneTransport != null) page.removeView(phoneTransport);
             LinearLayout panel = new LinearLayout(this);
             panel.setOrientation(LinearLayout.VERTICAL);
-            panel.setPadding(dp(48) / 2, dp(27) / 2, dp(48) / 2, dp(27) / 2);
+            // v7.8.1 compact: everything must fit ON ONE SCREEN — no scroll.
+            // The earlier 10-foot sizing (22sp title, 64-76dp buttons, fat
+            // paddings) blew the panel past the space below the stage, so
+            // rows got clipped; then the ScrollView wrapper hid options
+            // behind scrolling (user: "optionen weg"). Compact sizes keep
+            // every control visible and D-pad reachable at once.
+            panel.setPadding(dp(16), dp(6), dp(16), dp(6));
             panel.setBackgroundColor(Color.parseColor("#0b0d11"));
+            titleView.setTextSize(15);
+            artistView.setTextSize(11);
             panel.addView(meta);
             panel.addView(seekBar, new LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT, dp(30)));
+                    ViewGroup.LayoutParams.MATCH_PARENT, dp(18)));
             panel.addView(times);
 
             // transport row (prev/play/next) + fullscreen toggle in one line
             LinearLayout tvTransport = new LinearLayout(this);
             tvTransport.setOrientation(LinearLayout.HORIZONTAL);
             tvTransport.setGravity(Gravity.CENTER);
-            Button prevTv = transportButton("⏮", 22, TEXT);
+            Button prevTv = transportButton("⏮", 15, TEXT);
             prevTv.setOnClickListener(v -> { if (engine != null) engine.previous(); });
-            Button nextTv = transportButton("⏭", 22, TEXT);
+            Button nextTv = transportButton("⏭", 15, TEXT);
             nextTv.setOnClickListener(v -> { if (engine != null) engine.next(); });
-            fullscreenBtn = transportButton("⛶", 24, ACCENT);
+            fullscreenBtn = transportButton("⛶", 16, ACCENT);
             fullscreenBtn.setOnClickListener(v -> toggleVideoFullscreen());
-            playBtn = transportButton("▶", 30, ACCENT);
+            playBtn = transportButton("▶", 20, ACCENT);
             playBtn.setBackground(circleBackground());
             playBtn.setOnClickListener(v -> { if (engine != null) engine.playPause(); });
-            LinearLayout.LayoutParams playTvParams = new LinearLayout.LayoutParams(dp(76), dp(76));
-            playTvParams.setMargins(dp(18), 0, dp(18), 0);
+            LinearLayout.LayoutParams playTvParams = new LinearLayout.LayoutParams(dp(48), dp(48));
+            playTvParams.setMargins(dp(12), 0, dp(12), 0);
             playBtn.setLayoutParams(playTvParams);
             tvTransport.addView(prevTv);
             tvTransport.addView(playBtn);
@@ -857,50 +865,28 @@ public class MainActivity extends Activity implements PlayerEngine.Listener {
             View spacer = new View(this);
             tvTransport.addView(spacer, new LinearLayout.LayoutParams(0, 1, 1f));
             tvTransport.addView(fullscreenBtn,
-                    new LinearLayout.LayoutParams(dp(76), dp(76)));
+                    new LinearLayout.LayoutParams(dp(48), dp(48)));
             panel.addView(tvTransport);
 
             panel.addView(secondary);
             panel.addView(recordRow);
             panel.addView(volumeRow, new LinearLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-            // 10-foot UI: bigger hit targets and text on TV
-            titleView.setTextSize(22);
-            artistView.setTextSize(16);
-            playBtn.setTextSize(22);
-            playBtn.setMinHeight(dp(64));
-            int big = dp(56);
+            // compact hit targets: still D-pad-friendly (36dp) but everything
+            // fits below the stage without scrolling
+            int small = dp(36);
             for (Button b : new Button[]{shuffleBtn, repeatBtn, abBtn, rateBtn}) {
-                b.setMinHeight(big);
+                b.setMinHeight(small);
+                b.setMinimumWidth(small);
+                b.setTextSize(12);
             }
-            recordBtn.setMinHeight(dp(56));
+            recordBtn.setMinHeight(small);
+            recordBtn.setTextSize(12);
             // the panel lives in `page` BELOW the stage — real layout space,
-            // no layer above the video, no focus ambiguity. Wrapped in a
-            // height-capped ScrollView: on 4:3/small TV screens the panel is
-            // taller than the space below the stage; without scrolling the
-            // record/volume rows are clipped off-screen and unreachable by
-            // D-pad (user photo: cut-off button below the A–B row). The cap
-            // keeps the video area dominant; focus-driven scrolling brings
-            // clipped controls back into view.
-            android.widget.ScrollView panelScroll = new android.widget.ScrollView(this) {
-                private int maxH;
-                @Override protected void onMeasure(int wSpec, int hSpec) {
-                    if (maxH == 0) {
-                        maxH = Math.round(getResources().getDisplayMetrics().heightPixels * 0.45f);
-                    }
-                    super.onMeasure(wSpec, View.MeasureSpec.makeMeasureSpec(maxH, View.MeasureSpec.AT_MOST));
-                    // shrink to the actual content height when it fits
-                    View child = getChildAt(0);
-                    int h = Math.min(child.getMeasuredHeight(), maxH);
-                    setMeasuredDimension(getMeasuredWidth(), h);
-                }
-            };
-            panelScroll.setVerticalScrollBarEnabled(false);
-            panelScroll.addView(panel, new ViewGroup.LayoutParams(
+            // no layer above the video, no focus ambiguity, no scrolling
+            page.addView(panel, new LinearLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-            panelScroll.setTag("tv-control-panel");
-            page.addView(panelScroll, new LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+            panel.setTag("tv-control-panel");
             stage.setTag("video-stage");
         }
         // v7.8.1 (bug 3): stage-layout-driven aspect fitting. Layout changes
