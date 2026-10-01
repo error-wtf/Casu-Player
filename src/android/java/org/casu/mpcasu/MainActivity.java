@@ -28,6 +28,7 @@ import android.view.Surface;
 import android.view.TextureView;
 import android.view.View;
 import android.view.ViewGroup;
+import android.view.ViewParent;
 import android.widget.BaseAdapter;
 import android.widget.Button;
 import android.widget.EditText;
@@ -417,6 +418,12 @@ public class MainActivity extends Activity implements PlayerEngine.Listener {
                 // otherwise this is normal D-pad navigation
                 return playTab && !isTransportOverlayVisible()
                         && !focusOnInteractive() && showTransportOverlay();
+            case android.view.KeyEvent.KEYCODE_DPAD_DOWN:
+                // D-pad DOWN from the empty stage reveals the controls too —
+                // on TV the nav bar sits BELOW, so claim DOWN only when the
+                // overlay is hidden and nothing interactive owns focus.
+                return playTab && !isTransportOverlayVisible()
+                        && !focusOnInteractive() && showTransportOverlay();
             case android.view.KeyEvent.KEYCODE_DPAD_CENTER:
             case android.view.KeyEvent.KEYCODE_ENTER:
                 // first press reveals the overlay; once visible (or when an
@@ -473,6 +480,27 @@ public class MainActivity extends Activity implements PlayerEngine.Listener {
         return true;
     }
 
+    /** v7.8.1 TV hint: the empty stage must never look dead — show a hint
+     *  that the remote's OK button reveals the controls (no touch on TV). */
+    private void showTvStageHint() {
+        if (stage == null || stage.findViewWithTag("tv-stage-hint") != null) return;
+        TextView hint = new TextView(this);
+        hint.setTag("tv-stage-hint");
+        hint.setText("Fernbedienung: OK = Steuerung einblenden");
+        hint.setTextColor(Color.parseColor("#9aa3ad"));
+        hint.setTextSize(15);
+        hint.setGravity(Gravity.CENTER);
+        hint.setPadding(dp(16), dp(8), dp(16), dp(8));
+        stage.addView(hint, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT,
+                Gravity.CENTER));
+        // auto-remove once the overlay was revealed or playback starts
+        hint.postDelayed(() -> {
+            ViewParent p = hint.getParent();
+            if (p instanceof ViewGroup) ((ViewGroup) p).removeView(hint);
+        }, 6000);
+    }
+
     private void toggleTransportOverlay() {
         View bar = stage != null ? stage.findViewWithTag("transport-overlay") : null;
         if (bar == null) return;
@@ -492,7 +520,15 @@ public class MainActivity extends Activity implements PlayerEngine.Listener {
 
     private final Runnable hideTransportOverlay = () -> {
         View bar = stage != null ? stage.findViewWithTag("transport-overlay") : null;
-        if (bar != null && bar.getVisibility() == View.VISIBLE) bar.setVisibility(View.GONE);
+        if (bar != null && bar.getVisibility() == View.VISIBLE) {
+            bar.setVisibility(View.GONE);
+            // v7.8.1: never leave focus stranded inside the hidden overlay —
+            // drop it to the play page root so D-pad UP re-reveals it.
+            View focus = getCurrentFocus();
+            if (focus != null && bar.findFocus() == focus) {
+                focus.clearFocus();
+            }
+        }
     };
 
     private void buildUi() {
@@ -550,6 +586,14 @@ public class MainActivity extends Activity implements PlayerEngine.Listener {
             tab.setLayoutParams(params);
             final int tabIndex = i;
             tab.setContentDescription(labels[i]);
+            // v7.8.1 TV: bottom-nav tabs MUST be D-pad focusable — they are
+            // LinearLayouts (ViewGroups), which RemoteFocus intentionally
+            // skips, so mark them explicitly.
+            if (tvMode) {
+                tab.setFocusable(true);
+                tab.setFocusableInTouchMode(false);
+                tab.setBackgroundResource(android.R.drawable.list_selector_background);
+            }
             tab.setOnClickListener(v -> { showTab(tabIndex); content.getChildAt(tabIndex).requestFocus(View.FOCUS_FORWARD); });
             nav.addView(tab);
             navTabs[i] = icon;
@@ -567,6 +611,9 @@ public class MainActivity extends Activity implements PlayerEngine.Listener {
         }
         if (tab == TAB_QUEUE) refreshQueueUi();
         if (tab == TAB_LIBRARY) refreshLibrary();
+        // v7.8.1 TV: on the play tab the empty stage must not look dead —
+        // hint how to reveal the controls with the remote.
+        if (tab == TAB_PLAY && tvMode && !isTransportOverlayVisible()) showTvStageHint();
     }
 
     // ---------------------------------------------------------------- PLAY view
