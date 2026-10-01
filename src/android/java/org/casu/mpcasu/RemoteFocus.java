@@ -50,7 +50,12 @@ public final class RemoteFocus extends View {
     }
     private static void prepare(View view, RemoteFocus ring) {
         if (view == ring || view instanceof android.webkit.WebView) return;
-        if (view.isClickable() || view instanceof android.widget.EditText || view instanceof android.widget.SeekBar) {
+        // v7.8.1 fix: a ViewGroup that is only a click-catcher (e.g. the video
+        // stage with its overlay toggle) must never become a D-pad focus stop —
+        // otherwise the yellow ring wraps the WHOLE video area and swallows
+        // navigation. Only leaf widgets (buttons, bars, fields) are focusable.
+        boolean leaf = !(view instanceof ViewGroup);
+        if (leaf && (view.isClickable() || view instanceof android.widget.EditText || view instanceof android.widget.SeekBar)) {
             view.setFocusable(true);
             if (view.getId() == NO_ID) view.setId(generateViewId());
         }

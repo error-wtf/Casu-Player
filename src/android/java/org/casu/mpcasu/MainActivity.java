@@ -115,6 +115,7 @@ public class MainActivity extends Activity implements PlayerEngine.Listener {
     private LinearLayout volumeRow;
     private int videoW;
     private int videoH;
+    private int aspectRetryCount;      // bounded 0x0-stage retries for applyVideoAspect
     private boolean immersiveActive;
     private boolean draggingSeek;
     private boolean videoActive;
@@ -379,6 +380,11 @@ public class MainActivity extends Activity implements PlayerEngine.Listener {
     // ================================================================== UI BUILD
 
     @Override public void onBackPressed() {
+        if (activeTab == TAB_PLAY && isTransportOverlayVisible()) {
+            // v7.8.1: BACK first dismisses the TV transport overlay
+            toggleTransportOverlay();
+            return;
+        }
         if (activeTab != TAB_PLAY) { showTab(TAB_PLAY); bottomNav.getChildAt(TAB_PLAY).requestFocus(); return; }
         super.onBackPressed();
     }
@@ -389,8 +395,105 @@ public class MainActivity extends Activity implements PlayerEngine.Listener {
     }
     @Override public boolean dispatchKeyEvent(android.view.KeyEvent event) {
         if (remoteFocus != null) remoteFocus.keyboard();
+        if (event.getAction() == android.view.KeyEvent.ACTION_DOWN
+                && event.getRepeatCount() == 0
+                && handleTvKey(event.getKeyCode())) {
+            return true;
+        }
         return super.dispatchKeyEvent(event);
     }
+
+    /**
+     * v7.8.1 (bug 1b): TV remote control in the PLAY tab. FireTV has no
+     * touch, so the transport overlay was unreachable and media keys did
+     * nothing in-app. DPAD_CENTER/UP/MENU reveal the overlay, transport
+     * keys act on the engine directly. Returns true when consumed.
+     */
+    private boolean handleTvKey(int keyCode) {
+        boolean playTab = activeTab == TAB_PLAY;
+        switch (keyCode) {
+            case android.view.KeyEvent.KEYCODE_DPAD_UP:
+                // only claim the key when no interactive view owns focus —
+                // otherwise this is normal D-pad navigation
+                return playTab && !isTransportOverlayVisible()
+                        && !focusOnInteractive() && showTransportOverlay();
+            case android.view.KeyEvent.KEYCODE_DPAD_CENTER:
+            case android.view.KeyEvent.KEYCODE_ENTER:
+                // first press reveals the overlay; once visible (or when an
+                // interactive control owns focus) the event flows normally
+                return playTab && !isTransportOverlayVisible()
+                        && !focusOnInteractive() && showTransportOverlay();
+            case android.view.KeyEvent.KEYCODE_MENU:
+                if (playTab) { toggleTransportOverlay(); return true; }
+                return false;
+            case android.view.KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE:
+            case android.view.KeyEvent.KEYCODE_MEDIA_PLAY:
+            case android.view.KeyEvent.KEYCODE_MEDIA_PAUSE:
+                if (engine != null) { engine.playPause(); if (playTab) showTransportOverlay(); return true; }
+                return false;
+            case android.view.KeyEvent.KEYCODE_MEDIA_NEXT:
+                if (engine != null) { engine.next(); if (playTab) showTransportOverlay(); return true; }
+                return false;
+            case android.view.KeyEvent.KEYCODE_MEDIA_PREVIOUS:
+                if (engine != null) { engine.previous(); if (playTab) showTransportOverlay(); return true; }
+                return false;
+            default:
+                return false;
+        }
+    }
+
+    /** True when the current focus is a widget that handles D-pad itself. */
+    private boolean focusOnInteractive() {
+        View focus = getCurrentFocus();
+        return focus instanceof Button
+                || focus instanceof ImageButton
+                || focus instanceof SeekBar
+                || focus instanceof EditText
+                || focus instanceof ListView
+                || focus instanceof Spinner
+                || focus instanceof android.widget.CheckBox;
+    }
+
+    private boolean isTransportOverlayVisible() {
+        View bar = stage != null ? stage.findViewWithTag("transport-overlay") : null;
+        return bar != null && bar.getVisibility() == View.VISIBLE;
+    }
+
+    /** Reveals the overlay, focuses the first control and arms the 4s auto-hide. */
+    private boolean showTransportOverlay() {
+        View bar = stage != null ? stage.findViewWithTag("transport-overlay") : null;
+        if (bar == null) return false;
+        if (bar.getVisibility() != View.VISIBLE) {
+            bar.setVisibility(View.VISIBLE);
+            // v7.8.1: jump focus into the overlay so D-pad navigates the
+            // controls instead of the (non-focusable) stage.
+            if (playBtn != null) playBtn.requestFocus();
+        }
+        armOverlayAutoHide();
+        return true;
+    }
+
+    private void toggleTransportOverlay() {
+        View bar = stage != null ? stage.findViewWithTag("transport-overlay") : null;
+        if (bar == null) return;
+        if (bar.getVisibility() == View.VISIBLE) {
+            bar.setVisibility(View.GONE);
+            ui.removeCallbacks(hideTransportOverlay);
+        } else {
+            showTransportOverlay();
+        }
+    }
+
+    /** v7.8.1: the overlay used to stay on screen forever once opened. */
+    private void armOverlayAutoHide() {
+        ui.removeCallbacks(hideTransportOverlay);
+        ui.postDelayed(hideTransportOverlay, 4000);
+    }
+
+    private final Runnable hideTransportOverlay = () -> {
+        View bar = stage != null ? stage.findViewWithTag("transport-overlay") : null;
+        if (bar != null && bar.getVisibility() == View.VISIBLE) bar.setVisibility(View.GONE);
+    };
 
     private void buildUi() {
         root = new FrameLayout(this);
@@ -486,12 +589,19 @@ public class MainActivity extends Activity implements PlayerEngine.Listener {
         videoView.setSurfaceTextureListener(new android.view.TextureView.SurfaceTextureListener() {
             @Override public void onSurfaceTextureAvailable(android.graphics.SurfaceTexture surface,
                                                             int width, int height) {
-                if (engine != null) engine.setSurface(new Surface(surface));
+                // v7.8.1 (bug 1c): pass Surface AND SurfaceTexture through —
+                // libVLC scales its vout from the texture's buffer size.
+                if (engine != null) engine.setSurface(new Surface(surface), surface);
+                applyVideoBufferSize();
+                applyVideoAspect();
             }
             @Override public void onSurfaceTextureSizeChanged(android.graphics.SurfaceTexture surface,
                                                               int width, int height) {
-                // v7.8: rotation/resize must re-fit the video geometry
+                // v7.8: rotation/resize must re-fit the video geometry.
+                // v7.8.1: VLC 3 only learns the new geometry through a
+                // detach/attach cycle, so re-bind the surface as well.
                 applyVideoAspect();
+                if (engine != null) engine.setSurface(new Surface(surface), surface);
             }
             @Override public boolean onSurfaceTextureDestroyed(android.graphics.SurfaceTexture surface) {
                 if (engine != null) engine.setSurface(null);
@@ -694,6 +804,7 @@ public class MainActivity extends Activity implements PlayerEngine.Listener {
         // full surface. TV overscan padding per Android TV guidelines.
         boolean landscape = getResources().getConfiguration().orientation
                 == android.content.res.Configuration.ORIENTATION_LANDSCAPE;
+        lastOrientation = getResources().getConfiguration().orientation;
         if (tvMode || landscape) {
             page.setPadding(0, 0, 0, 0);
             stageParams.bottomMargin = 0;
@@ -745,6 +856,15 @@ public class MainActivity extends Activity implements PlayerEngine.Listener {
                 if (immersiveActive) applyImmersive(true); // re-arm hide timer
             });
         }
+        // v7.8.1 (bug 3): stage-layout-driven aspect fitting. Layout changes
+        // (first layout, IME resize, immersive toggle, rotation rebuild)
+        // re-run applyVideoAspect; the method itself is idempotent.
+        stage.addOnLayoutChangeListener((v, left, top, right, bottom,
+                                         oldLeft, oldTop, oldRight, oldBottom) -> {
+            if (right - left != oldRight - oldLeft || bottom - top != oldBottom - oldTop) {
+                applyVideoAspect();
+            }
+        });
 
         return page;
     }
@@ -2052,6 +2172,13 @@ public class MainActivity extends Activity implements PlayerEngine.Listener {
 
     @Override public void onItemChanged(MediaItem item, int index) {
         ui.post(() -> {
+            // v7.8.1 (bug 3.1): stale video geometry must never leak into the
+            // next item — reset and let onVideoSizeChanged/onTracksReady
+            // re-populate for the new track.
+            videoW = 0;
+            videoH = 0;
+            videoActive = false;
+            aspectRetryCount = 0;
             String nextUri = item == null ? "" : item.url;
             String nextTags = item == null ? "" : (String.valueOf(item.title) + "\n"
                     + String.valueOf(item.artist) + "\n" + String.valueOf(item.badge));
@@ -2098,6 +2225,10 @@ public class MainActivity extends Activity implements PlayerEngine.Listener {
             boolean video = engine.videoWidth() > 0 && engine.videoHeight() > 0;
             videoActive = video;
             updateStageFor(engine.current());
+            // v7.8.1 (bug 3.5): tracks ready is the reliable point where the
+            // engine knows its geometry — fit even if no separate size event
+            // arrives (MediaPlayer backend fires onInfo early/stale).
+            if (video) applyVideoAspect();
             attachVisualizer();
             applyVolume();
         });
@@ -2108,7 +2239,10 @@ public class MainActivity extends Activity implements PlayerEngine.Listener {
             if (width > 0 && height > 0) {
                 videoW = width;
                 videoH = height;
+                aspectRetryCount = 0;
                 videoActive = true;
+                // v7.8.1: buffer size FIRST (VLC scales from it), then fit.
+                applyVideoBufferSize();
                 applyVideoAspect();
                 updateStageFor(engine.current());
             }
@@ -2116,23 +2250,64 @@ public class MainActivity extends Activity implements PlayerEngine.Listener {
     }
 
     /**
-     * v7.8: fit the TextureView to the video aspect ratio, centred in the
-     * stage. Previously the view stayed MATCH_PARENT and the MediaPlayer
-     * backend stretched frames to the surface (VLC letterboxed instead —
-     * inconsistent geometry per backend).
+     * v7.8.1: fit the TextureView to the video aspect ratio, centred in the
+     * stage. Rework of the v7.8 version which had five defects:
+     *  (1) stale cached videoW/H leaked across track changes,
+     *  (2) a 0×0 stage silently dropped the sizing forever (now retried via
+     *      postDelayed and retriggered by the stage layout listener),
+     *  (3) the SurfaceTexture buffer size was never set, so both backends
+     *      rendered into undersized buffers (see applyVideoBufferSize),
+     *  (4) no re-apply on stage resize without a texture event (layout
+     *      listener added in buildPlayView, immersive toggle re-applies),
+     *  (5) updateStageFor only called it while video==true with stale dims.
      */
     private void applyVideoAspect() {
-        if (videoW == 0 || videoH == 0 || stage == null || videoView == null) return;
-        stage.post(() -> {
-            int sw = stage.getWidth();
-            int sh = stage.getHeight();
-            if (sw == 0 || sh == 0) return;
-            float scale = Math.min((float) sw / videoW, (float) sh / videoH);
-            int w = Math.round(videoW * scale);
-            int h = Math.round(videoH * scale);
-            FrameLayout.LayoutParams p = new FrameLayout.LayoutParams(w, h, Gravity.CENTER);
-            videoView.setLayoutParams(p);
-        });
+        if (stage == null || videoView == null) return;
+        // Pull LIVE geometry from the engine instead of trusting the cached
+        // fields — a fresh VLC Vout event may already know the new size.
+        if (engine != null) {
+            int ew = engine.videoWidth();
+            int eh = engine.videoHeight();
+            if (ew > 0 && eh > 0) {
+                videoW = ew;
+                videoH = eh;
+            }
+        }
+        if (videoW == 0 || videoH == 0) return;
+        int sw = stage.getWidth();
+        int sh = stage.getHeight();
+        if (sw == 0 || sh == 0) {
+            // Stage not laid out yet: bounded retry (the layout listener
+            // catches the normal case; this covers event-before-layout).
+            if (aspectRetryCount < 8) {
+                aspectRetryCount++;
+                stage.postDelayed(this::applyVideoAspect, 50);
+            }
+            return;
+        }
+        aspectRetryCount = 0;
+        float scale = Math.min((float) sw / videoW, (float) sh / videoH);
+        int w = Math.round(videoW * scale);
+        int h = Math.round(videoH * scale);
+        FrameLayout.LayoutParams p = new FrameLayout.LayoutParams(w, h, Gravity.CENTER);
+        videoView.setLayoutParams(p);
+        applyVideoBufferSize();
+    }
+
+    /**
+     * v7.8.1 (bug 1c/3.3): the SurfaceTexture's default buffer size decides
+     * how much pixels MediaPlayer AND libVLC render into. Without this the
+     * buffers stay small and the video appears tiny / blurry / top-left.
+     */
+    private void applyVideoBufferSize() {
+        if (videoView == null || videoW <= 0 || videoH <= 0) return;
+        android.graphics.SurfaceTexture texture = videoView.getSurfaceTexture();
+        if (texture != null) {
+            try {
+                texture.setDefaultBufferSize(Math.max(1, videoW), Math.max(1, videoH));
+            } catch (Exception ignored) {
+            }
+        }
     }
 
     /** v7.8: immersive fullscreen while a video is playing (TV + landscape). */
@@ -2148,6 +2323,10 @@ public class MainActivity extends Activity implements PlayerEngine.Listener {
                    | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
                    | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN)
                 : View.SYSTEM_UI_FLAG_VISIBLE);
+        // v7.8.1 (bug 3.4): toggling system chrome changes the stage size
+        // without a SurfaceTexture event — re-fit the video after the
+        // relayout settles.
+        if (stage != null) stage.post(this::applyVideoAspect);
     }
 
     private void updateTimeLabels(long positionMs, long durationMs) {
@@ -2179,7 +2358,9 @@ public class MainActivity extends Activity implements PlayerEngine.Listener {
         boolean landscape = getResources().getConfiguration().orientation
                 == android.content.res.Configuration.ORIENTATION_LANDSCAPE;
         applyImmersive(video && (tvMode || landscape));
-        if (video) applyVideoAspect();
+        // v7.8.1 (bug 3.5): always re-fit when the video view is (becoming)
+        // visible — not only while video==true with possibly stale dims.
+        if (videoView.getVisibility() == View.VISIBLE) applyVideoAspect();
     }
 
     private void attachVisualizer() {
@@ -3001,6 +3182,31 @@ public class MainActivity extends Activity implements PlayerEngine.Listener {
 
     // ================================================================== lifecycle
 
+    /**
+     * v7.8.1 (P0): the manifest declares orientation|screenSize|… configChanges
+     * but onConfigurationChanged was never implemented, so after a rotation
+     * the activity kept its start-time layout — a portrait phone stack after
+     * rotating to landscape, no TV overlay. Rebuild the UI while preserving
+     * engine/queue state (the engine lives in PlaybackService, untouched).
+     */
+    private int lastOrientation;       // orientation at last buildUi/rebuild
+
+    @Override
+    public void onConfigurationChanged(android.content.res.Configuration newConfig) {
+        super.onConfigurationChanged(newConfig);
+        if (newConfig.orientation == lastOrientation) return;
+        lastOrientation = newConfig.orientation;
+        if (root == null) return;
+        int tab = activeTab;
+        // Rebuild the view hierarchy; the engine keeps its queue/index — only
+        // the views are replaced. onItemChanged/onStateChanged re-render.
+        buildUi();
+        setContentView(root);
+        showTab(tab);
+        onStateChanged(engine != null && engine.isPlaying());
+        if (engine != null) onItemChanged(engine.current(), engine.index());
+    }
+
     @Override
     protected void onResume() {
         super.onResume();
@@ -3021,6 +3227,12 @@ public class MainActivity extends Activity implements PlayerEngine.Listener {
     protected void onPause() {
         super.onPause();
         if (engine != null) engine.persist();
+    }
+
+    @Override
+    protected void onDestroy() {
+        super.onDestroy();
+        ui.removeCallbacks(hideTransportOverlay);
     }
 
     private void toast(String text) {

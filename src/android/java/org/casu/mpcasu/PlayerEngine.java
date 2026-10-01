@@ -75,6 +75,7 @@ public final class PlayerEngine implements
     private boolean usingVlc;
 
     private android.view.Surface surface;   // kept across player recreation
+    private android.graphics.SurfaceTexture surfaceTexture; // TextureView backing (v7.8.1)
     private final List<MediaItem> items = new ArrayList<>();
     private int index = -1;
     private boolean prepared;
@@ -650,16 +651,26 @@ public final class PlayerEngine implements
         if (vlc == null) return;
         try {
             IVLCVout vout = vlc.getVLCVout();
-            if (surface != null) {
-                // Bind the Surface from the UI (TextureView) so video renders.
-                vout.setVideoSurface(surface, null);
-                vout.attachViews();
-            } else {
-                vout.attachViews();
-            }
+            bindVoutSurface(vout);
         } catch (Exception e) {
             Log.i(TAG, "vout attach skipped: " + e.getMessage());
         }
+    }
+
+    /**
+     * v7.8.1 (bug 1c): bind the TextureView's SurfaceTexture directly —
+     * libVLC 3.x scales its vout from the texture's default buffer size.
+     * The old Surface-only binding never received a buffer size, rendering
+     * the video small in the bottom-left corner on FireTV. The UI sets the
+     * buffer size to the video geometry via setDefaultBufferSize(w, h).
+     */
+    private void bindVoutSurface(IVLCVout vout) {
+        if (surfaceTexture != null) {
+            vout.setVideoSurface(surfaceTexture);
+        } else if (surface != null) {
+            vout.setVideoSurface(surface, null);
+        }
+        vout.attachViews();
     }
 
     private void onVlcEvent(org.videolan.libvlc.MediaPlayer.Event event) {
@@ -775,18 +786,32 @@ public final class PlayerEngine implements
     /** Attach a video surface, kept referenced so every player instance is bound. */
     public void setSurface(android.view.Surface newSurface) {
         this.surface = newSurface;
+        // Preserve the last known SurfaceTexture unless the caller provides
+        // a new Surface wrapping a different one.
+        rebindSurface();
+    }
+
+    /** Attach surface + backing SurfaceTexture (TextureView path). The texture
+     *  is what drives libVLC's vout scaling, so it must be handed through. */
+    public void setSurface(android.view.Surface newSurface,
+                           android.graphics.SurfaceTexture newTexture) {
+        this.surface = newSurface;
+        this.surfaceTexture = newTexture;
+        rebindSurface();
+    }
+
+    private void rebindSurface() {
         if (usingVlc && vlc != null) {
             try {
                 IVLCVout vout = vlc.getVLCVout();
-                if (newSurface != null) {
-                    vout.setVideoSurface(newSurface, null);
-                    vout.attachViews();
+                if (surface != null || surfaceTexture != null) {
+                    bindVoutSurface(vout);
                 } else {
                     vout.detachViews();
                 }
             } catch (Exception ignored) {}
         } else if (player != null) {
-            try { player.setSurface(newSurface); } catch (Exception ignored) {}
+            try { player.setSurface(surface); } catch (Exception ignored) {}
         }
     }
 
