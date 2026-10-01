@@ -875,10 +875,32 @@ public class MainActivity extends Activity implements PlayerEngine.Listener {
             }
             recordBtn.setMinHeight(dp(56));
             // the panel lives in `page` BELOW the stage — real layout space,
-            // no layer above the video, no focus ambiguity
-            page.addView(panel, new LinearLayout.LayoutParams(
+            // no layer above the video, no focus ambiguity. Wrapped in a
+            // height-capped ScrollView: on 4:3/small TV screens the panel is
+            // taller than the space below the stage; without scrolling the
+            // record/volume rows are clipped off-screen and unreachable by
+            // D-pad (user photo: cut-off button below the A–B row). The cap
+            // keeps the video area dominant; focus-driven scrolling brings
+            // clipped controls back into view.
+            android.widget.ScrollView panelScroll = new android.widget.ScrollView(this) {
+                private int maxH;
+                @Override protected void onMeasure(int wSpec, int hSpec) {
+                    if (maxH == 0) {
+                        maxH = Math.round(getResources().getDisplayMetrics().heightPixels * 0.45f);
+                    }
+                    super.onMeasure(wSpec, View.MeasureSpec.makeMeasureSpec(maxH, View.MeasureSpec.AT_MOST));
+                    // shrink to the actual content height when it fits
+                    View child = getChildAt(0);
+                    int h = Math.min(child.getMeasuredHeight(), maxH);
+                    setMeasuredDimension(getMeasuredWidth(), h);
+                }
+            };
+            panelScroll.setVerticalScrollBarEnabled(false);
+            panelScroll.addView(panel, new ViewGroup.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-            panel.setTag("tv-control-panel");
+            panelScroll.setTag("tv-control-panel");
+            page.addView(panelScroll, new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
             stage.setTag("video-stage");
         }
         // v7.8.1 (bug 3): stage-layout-driven aspect fitting. Layout changes
