@@ -806,7 +806,10 @@ public class MainActivity extends Activity implements PlayerEngine.Listener {
                 == android.content.res.Configuration.ORIENTATION_LANDSCAPE;
         lastOrientation = getResources().getConfiguration().orientation;
         if (tvMode || landscape) {
-            page.setPadding(0, 0, 0, 0);
+            // v7.8.1 fix: KEEP the 76dp bottom padding — the bottom nav bar
+            // (64dp) floats over the page; padding 0 made the last panel rows
+            // (secondary/volume) render BEHIND the nav bar = "options gone".
+            page.setPadding(0, 0, 0, dp(76));
             stageParams.bottomMargin = 0;
             // v7.8.1 TV redesign: NO floating overlay any more. The overlay
             // layered controls ON TOP of the video, which broke D-pad focus
