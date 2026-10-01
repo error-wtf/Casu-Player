@@ -753,6 +753,7 @@ public class MainActivity extends Activity implements PlayerEngine.Listener {
         recordBtn.setTextColor(TEXT);
         recordBtn.setOnClickListener(v -> toggleRecording());
         recordRow.addView(recordBtn);
+        recordRow.setTag("phone-record-row");
         page.addView(recordRow);
 
         // volume row
@@ -870,7 +871,19 @@ public class MainActivity extends Activity implements PlayerEngine.Listener {
             panel.addView(tvTransport);
 
             panel.addView(secondary);
-            panel.addView(recordRow);
+            // v7.8.1: record button joins the END of the secondary row — its
+            // own row wasted a full line of vertical space and pushed the
+            // volume row toward overlap on small TVs.
+            View phoneRecordRow = page.findViewWithTag("phone-record-row");
+            if (phoneRecordRow != null) page.removeView(phoneRecordRow);
+            if (recordBtn.getParent() instanceof ViewGroup) {
+                ((ViewGroup) recordBtn.getParent()).removeView(recordBtn);
+            }
+            secondary.addView(recordBtn);
+            LinearLayout.LayoutParams recParams = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT, dp(28));
+            recParams.setMargins(dp(3), 0, dp(3), 0);
+            recordBtn.setLayoutParams(recParams);
             panel.addView(volumeRow, new LinearLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
             // compact hit targets: everything fits below the stage on one
