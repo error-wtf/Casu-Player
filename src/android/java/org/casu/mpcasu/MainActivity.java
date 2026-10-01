@@ -118,6 +118,8 @@ public class MainActivity extends Activity implements PlayerEngine.Listener {
     private int videoH;
     private int aspectRetryCount;      // bounded 0x0-stage retries for applyVideoAspect
     private boolean immersiveActive;
+    private Button fullscreenBtn;      // v7.8.1 TV: video fullscreen toggle
+    private boolean videoFullscreen;   // v7.8.1 TV: panel hidden, video full
     private boolean draggingSeek;
     private boolean videoActive;
 
@@ -381,9 +383,9 @@ public class MainActivity extends Activity implements PlayerEngine.Listener {
     // ================================================================== UI BUILD
 
     @Override public void onBackPressed() {
-        if (activeTab == TAB_PLAY && isTransportOverlayVisible()) {
-            // v7.8.1: BACK first dismisses the TV transport overlay
-            toggleTransportOverlay();
+        if (activeTab == TAB_PLAY && videoFullscreen) {
+            // v7.8.1: BACK exits video fullscreen first
+            toggleVideoFullscreen();
             return;
         }
         if (activeTab != TAB_PLAY) { showTab(TAB_PLAY); bottomNav.getChildAt(TAB_PLAY).requestFocus(); return; }
@@ -413,43 +415,33 @@ public class MainActivity extends Activity implements PlayerEngine.Listener {
     private boolean handleTvKey(int keyCode) {
         boolean playTab = activeTab == TAB_PLAY;
         switch (keyCode) {
-            case android.view.KeyEvent.KEYCODE_DPAD_UP:
-                // only claim the key when no interactive view owns focus —
-                // otherwise this is normal D-pad navigation
-                return playTab && !isTransportOverlayVisible()
-                        && !focusOnInteractive() && showTransportOverlay();
-            case android.view.KeyEvent.KEYCODE_DPAD_DOWN:
-                // D-pad DOWN from the empty stage reveals the controls too —
-                // on TV the nav bar sits BELOW, so claim DOWN only when the
-                // overlay is hidden and nothing interactive owns focus.
-                return playTab && !isTransportOverlayVisible()
-                        && !focusOnInteractive() && showTransportOverlay();
-            case android.view.KeyEvent.KEYCODE_DPAD_CENTER:
-            case android.view.KeyEvent.KEYCODE_ENTER:
-                // first press reveals the overlay; once visible (or when an
-                // interactive control owns focus) the event flows normally
-                return playTab && !isTransportOverlayVisible()
-                        && !focusOnInteractive() && showTransportOverlay();
+            case android.view.KeyEvent.KEYCODE_BACK:
+                if (playTab && videoFullscreen) {
+                    toggleVideoFullscreen(); // BACK first exits video fullscreen
+                    return true;
+                }
+                return false;
             case android.view.KeyEvent.KEYCODE_MENU:
-                if (playTab) { toggleTransportOverlay(); return true; }
+                if (playTab) { toggleVideoFullscreen(); return true; }
                 return false;
             case android.view.KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE:
             case android.view.KeyEvent.KEYCODE_MEDIA_PLAY:
             case android.view.KeyEvent.KEYCODE_MEDIA_PAUSE:
-                if (engine != null) { engine.playPause(); if (playTab) showTransportOverlay(); return true; }
+                if (engine != null) { engine.playPause(); return true; }
                 return false;
             case android.view.KeyEvent.KEYCODE_MEDIA_NEXT:
-                if (engine != null) { engine.next(); if (playTab) showTransportOverlay(); return true; }
+                if (engine != null) { engine.next(); return true; }
                 return false;
             case android.view.KeyEvent.KEYCODE_MEDIA_PREVIOUS:
-                if (engine != null) { engine.previous(); if (playTab) showTransportOverlay(); return true; }
+                if (engine != null) { engine.previous(); return true; }
                 return false;
             default:
                 return false;
         }
     }
 
-    /** True when the current focus is a widget that handles D-pad itself. */
+    /** True when the current focus is a widget that handles D-pad itself.
+     *  (Retained for callers; no longer gates the fullscreen/media keys.) */
     private boolean focusOnInteractive() {
         View focus = getCurrentFocus();
         return focus instanceof Button
@@ -462,74 +454,33 @@ public class MainActivity extends Activity implements PlayerEngine.Listener {
     }
 
     private boolean isTransportOverlayVisible() {
-        View bar = stage != null ? stage.findViewWithTag("transport-overlay") : null;
-        return bar != null && bar.getVisibility() == View.VISIBLE;
+        // v7.8.1 redesign: the fixed TV control panel is ALWAYS visible
+        // unless video fullscreen mode hides it.
+        View panel = content.findViewWithTag("tv-control-panel");
+        return panel == null || panel.getVisibility() == View.VISIBLE;
     }
 
-    /** Reveals the overlay, focuses the first control and arms the 4s auto-hide. */
-    private boolean showTransportOverlay() {
-        View bar = stage != null ? stage.findViewWithTag("transport-overlay") : null;
-        if (bar == null) return false;
-        if (bar.getVisibility() != View.VISIBLE) {
-            bar.setVisibility(View.VISIBLE);
-            // v7.8.1: jump focus into the overlay so D-pad navigates the
-            // controls instead of the (non-focusable) stage.
-            if (playBtn != null) playBtn.requestFocus();
-        }
-        armOverlayAutoHide();
-        return true;
-    }
-
-    /** v7.8.1 TV hint: the empty stage must never look dead — show a hint
-     *  that the remote's OK button reveals the controls (no touch on TV). */
-    private void showTvStageHint() {
-        if (stage == null || stage.findViewWithTag("tv-stage-hint") != null) return;
-        TextView hint = new TextView(this);
-        hint.setTag("tv-stage-hint");
-        hint.setText("Fernbedienung: OK = Steuerung einblenden");
-        hint.setTextColor(Color.parseColor("#9aa3ad"));
-        hint.setTextSize(15);
-        hint.setGravity(Gravity.CENTER);
-        hint.setPadding(dp(16), dp(8), dp(16), dp(8));
-        stage.addView(hint, new FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT,
-                Gravity.CENTER));
-        // auto-remove once the overlay was revealed or playback starts
-        hint.postDelayed(() -> {
-            ViewParent p = hint.getParent();
-            if (p instanceof ViewGroup) ((ViewGroup) p).removeView(hint);
-        }, 6000);
-    }
-
-    private void toggleTransportOverlay() {
-        View bar = stage != null ? stage.findViewWithTag("transport-overlay") : null;
-        if (bar == null) return;
-        if (bar.getVisibility() == View.VISIBLE) {
-            bar.setVisibility(View.GONE);
-            ui.removeCallbacks(hideTransportOverlay);
+    /**
+     * v7.8.1 TV: fullscreen video — hides the control panel and the bottom
+     * nav so the video owns the whole screen. BACK or the fullscreen button
+     * brings the controls back.
+     */
+    private void toggleVideoFullscreen() {
+        View panel = content.findViewWithTag("tv-control-panel");
+        if (videoFullscreen) {
+            videoFullscreen = false;
+            if (panel != null) panel.setVisibility(View.VISIBLE);
+            if (bottomNav != null) bottomNav.setVisibility(View.VISIBLE);
+            applyImmersive(false);
         } else {
-            showTransportOverlay();
+            videoFullscreen = true;
+            if (panel != null) panel.setVisibility(View.GONE);
+            if (bottomNav != null) bottomNav.setVisibility(View.GONE);
+            applyImmersive(true);
+            toast("Vollbild · Zurück-Taste beendet");
         }
+        applyVideoAspect(); // stage grew/shrank — refit the video
     }
-
-    /** v7.8.1: the overlay used to stay on screen forever once opened. */
-    private void armOverlayAutoHide() {
-        ui.removeCallbacks(hideTransportOverlay);
-        ui.postDelayed(hideTransportOverlay, 4000);
-    }
-
-    private final Runnable hideTransportOverlay = () -> {
-        View bar = stage != null ? stage.findViewWithTag("transport-overlay") : null;
-        if (bar != null && bar.getVisibility() == View.VISIBLE) {
-            bar.setVisibility(View.GONE);
-            // v7.8.1: never leave focus stranded inside the hidden overlay —
-            // drop it to the play page root so D-pad UP re-reveals it.
-            View focus = getCurrentFocus();
-            if (focus != null && bar.findFocus() == focus) {
-                focus.clearFocus();
-            }
-        }
-    };
 
     private void buildUi() {
         root = new FrameLayout(this);
@@ -611,9 +562,9 @@ public class MainActivity extends Activity implements PlayerEngine.Listener {
         }
         if (tab == TAB_QUEUE) refreshQueueUi();
         if (tab == TAB_LIBRARY) refreshLibrary();
-        // v7.8.1 TV: on the play tab the empty stage must not look dead —
-        // hint how to reveal the controls with the remote.
-        if (tab == TAB_PLAY && tvMode && !isTransportOverlayVisible()) showTvStageHint();
+        // v7.8.1: leaving the play tab always exits video fullscreen so the
+        // other tabs are usable and the panel is back.
+        if (tab != TAB_PLAY && videoFullscreen) toggleVideoFullscreen();
     }
 
     // ---------------------------------------------------------------- PLAY view
@@ -855,53 +806,74 @@ public class MainActivity extends Activity implements PlayerEngine.Listener {
         if (tvMode || landscape) {
             page.setPadding(0, 0, 0, 0);
             stageParams.bottomMargin = 0;
-            // collect the control rows into one translucent overlay inside stage.
-            // The rows were added to `page` above; detach them first or the
-            // stage re-parent throws "child already has a parent" (TV crash).
+            // v7.8.1 TV redesign: NO floating overlay any more. The overlay
+            // layered controls ON TOP of the video, which broke D-pad focus
+            // (yellow ring around the whole content area, nav tabs blocked
+            // by control rows). Instead: a FIXED control panel BELOW the
+            // stage — normal focus traversal, video never covered — plus a
+            // FULLSCREEN toggle that hides the panel and lets the video use
+            // the whole screen. Rows were added to `page` above; detach them
+            // before re-parenting or the re-add throws "already has a parent".
             for (View row : new View[]{meta, seekBar, times, secondary, recordRow, volumeRow}) {
                 if (row != null && row.getParent() instanceof ViewGroup) {
                     ((ViewGroup) row.getParent()).removeView(row);
                 }
             }
-            LinearLayout overlay = new LinearLayout(this);
-            overlay.setOrientation(LinearLayout.VERTICAL);
-            overlay.setPadding(dp(48) / 2, dp(27) / 2, dp(48) / 2, dp(27) / 2);
-            overlay.setBackgroundColor(Color.argb(150, 8, 10, 13));
-            overlay.removeAllViews();
-            overlay.addView(meta);
-            overlay.addView(seekBar, new LinearLayout.LayoutParams(
+            LinearLayout panel = new LinearLayout(this);
+            panel.setOrientation(LinearLayout.VERTICAL);
+            panel.setPadding(dp(48) / 2, dp(27) / 2, dp(48) / 2, dp(27) / 2);
+            panel.setBackgroundColor(Color.parseColor("#0b0d11"));
+            panel.addView(meta);
+            panel.addView(seekBar, new LinearLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT, dp(30)));
-            overlay.addView(times);
-            overlay.addView(secondary);
-            overlay.addView(recordRow);
-            overlay.addView(volumeRow, new LinearLayout.LayoutParams(
+            panel.addView(times);
+
+            // transport row (prev/play/next) + fullscreen toggle in one line
+            LinearLayout tvTransport = new LinearLayout(this);
+            tvTransport.setOrientation(LinearLayout.HORIZONTAL);
+            tvTransport.setGravity(Gravity.CENTER);
+            Button prevTv = transportButton("⏮", 22, TEXT);
+            prevTv.setOnClickListener(v -> { if (engine != null) engine.previous(); });
+            Button nextTv = transportButton("⏭", 22, TEXT);
+            nextTv.setOnClickListener(v -> { if (engine != null) engine.next(); });
+            fullscreenBtn = transportButton("⛶", 24, ACCENT);
+            fullscreenBtn.setOnClickListener(v -> toggleVideoFullscreen());
+            playBtn = transportButton("▶", 30, ACCENT);
+            playBtn.setBackground(circleBackground());
+            playBtn.setOnClickListener(v -> { if (engine != null) engine.playPause(); });
+            LinearLayout.LayoutParams playTvParams = new LinearLayout.LayoutParams(dp(76), dp(76));
+            playTvParams.setMargins(dp(18), 0, dp(18), 0);
+            playBtn.setLayoutParams(playTvParams);
+            tvTransport.addView(prevTv);
+            tvTransport.addView(playBtn);
+            tvTransport.addView(nextTv);
+            // elastic spacer pushes the fullscreen button to the right edge
+            View spacer = new View(this);
+            tvTransport.addView(spacer, new LinearLayout.LayoutParams(0, 1, 1f));
+            tvTransport.addView(fullscreenBtn,
+                    new LinearLayout.LayoutParams(dp(76), dp(76)));
+            panel.addView(tvTransport);
+
+            panel.addView(secondary);
+            panel.addView(recordRow);
+            panel.addView(volumeRow, new LinearLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-            if (tvMode) {
-                // 10-foot UI: bigger hit targets and text on TV
-                titleView.setTextSize(22);
-                artistView.setTextSize(16);
-                playBtn.setTextSize(22);
-                playBtn.setMinHeight(dp(64));
-                int big = dp(56);
-                for (Button b : new Button[]{shuffleBtn, repeatBtn, abBtn, rateBtn}) {
-                    b.setMinHeight(big);
-                }
-                recordBtn.setMinHeight(dp(56));
+            // 10-foot UI: bigger hit targets and text on TV
+            titleView.setTextSize(22);
+            artistView.setTextSize(16);
+            playBtn.setTextSize(22);
+            playBtn.setMinHeight(dp(64));
+            int big = dp(56);
+            for (Button b : new Button[]{shuffleBtn, repeatBtn, abBtn, rateBtn}) {
+                b.setMinHeight(big);
             }
-            FrameLayout.LayoutParams overlayParams = new FrameLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT,
-                    Gravity.BOTTOM);
-            stage.addView(overlay, overlayParams);
-            overlay.setVisibility(View.GONE);
-            overlay.setTag("transport-overlay");
-            // tap on stage toggles the overlay; on TV any D-Pad key shows it
-            stage.setOnClickListener(v -> {
-                View bar = stage.findViewWithTag("transport-overlay");
-                if (bar != null) {
-                    bar.setVisibility(bar.getVisibility() == View.VISIBLE ? View.GONE : View.VISIBLE);
-                }
-                if (immersiveActive) applyImmersive(true); // re-arm hide timer
-            });
+            recordBtn.setMinHeight(dp(56));
+            // the panel lives in `page` BELOW the stage — real layout space,
+            // no layer above the video, no focus ambiguity
+            page.addView(panel, new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+            panel.setTag("tv-control-panel");
+            stage.setTag("video-stage");
         }
         // v7.8.1 (bug 3): stage-layout-driven aspect fitting. Layout changes
         // (first layout, IME resize, immersive toggle, rotation rebuild)
@@ -2401,10 +2373,12 @@ public class MainActivity extends Activity implements PlayerEngine.Listener {
         waveLayout.height = cover ? dp(48) : FrameLayout.LayoutParams.MATCH_PARENT;
         waveLayout.gravity = Gravity.BOTTOM;
         waveView.setLayoutParams(waveLayout);
-        // v7.8: video → immersive on TV/landscape; audio/cover → normal chrome
+        // v7.8.1 panel redesign: immersive (system bars hidden) ONLY in video
+        // fullscreen mode — with the fixed control panel below the stage the
+        // normal chrome stays visible otherwise.
         boolean landscape = getResources().getConfiguration().orientation
                 == android.content.res.Configuration.ORIENTATION_LANDSCAPE;
-        applyImmersive(video && (tvMode || landscape));
+        applyImmersive(video && videoFullscreen);
         // v7.8.1 (bug 3.5): always re-fit when the video view is (becoming)
         // visible — not only while video==true with possibly stale dims.
         if (videoView.getVisibility() == View.VISIBLE) applyVideoAspect();
@@ -3279,7 +3253,6 @@ public class MainActivity extends Activity implements PlayerEngine.Listener {
     @Override
     protected void onDestroy() {
         super.onDestroy();
-        ui.removeCallbacks(hideTransportOverlay);
     }
 
     private void toast(String text) {
