@@ -88,7 +88,7 @@ public final class IptvView extends LinearLayout {
         new Thread(()->{try {
             PlaylistIO.Playlist parsed=PlaylistIO.load(source,p->PlaylistIO.fetchText(activity,p));
             List<MediaItem> loaded=new ArrayList<>();Set<String> seen=new HashSet<>();
-            for(PlaylistIO.Entry entry:parsed.items){if(loaded.size()>=10000)throw new IllegalArgumentException("Maximal 10000 Sender");if(!seen.add(entry.url))continue;
+            for(PlaylistIO.Entry entry:parsed.items){if(loaded.size()>=50000)throw new IllegalArgumentException("Maximal 50000 Sender");if(!seen.add(entry.url))continue;
                 MediaItem item=new MediaItem(entry.url,entry.title,"stream","IPTV");item.playlist=entry.group.isEmpty()?"Ohne Gruppe":entry.group;loaded.add(item);}
             if(loaded.isEmpty())throw new IllegalArgumentException("Keine Sender gefunden");
             JSONArray data=new JSONArray();for(MediaItem item:loaded)data.put(item.toJson());
